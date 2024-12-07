@@ -1,4 +1,4 @@
-2. Add monitoring points for residuals
-3. Add error handling
-4. Add physical time control and stopping criteria
-5. Add under-relaxation for SIMPLEC algorithm stability
+1. Figure out why velocity field does not propagate forward in time
+2. Revise SIMPLEC algorithm to show debugging output
+3. Check boundary conditions for pressure field
+4. Check code for consistency with constant values usage -- ensure no hardcoded values wherever possible

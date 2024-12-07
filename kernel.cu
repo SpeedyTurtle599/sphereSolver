@@ -69,7 +69,7 @@
 #define INLET_TURBULENT_INTENSITY 0.05f
 #define OUTLET_PRESSURE P_REF
 
-// Function prototypes/prologues
+// Function prototypes
 __device__ bool isInsideSphere(int i, int j, int k);
 __device__ bool isNearSphere(int i, int j, int k);
 __device__ float getInletVelocityProfile(int j, int k, int ny, int nz);
@@ -187,6 +187,27 @@ __global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
         w_old[idx] = w[idx];
         k_old[idx] = k[idx];
         eps_old[idx] = eps[idx];
+    }
+}
+
+// MARK: extractMonitoringValues
+__global__ void extractMonitoringValues(float *field, float *monitor_values, int *monitor_indices, int num_points)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_points)
+    {
+        int field_idx = monitor_indices[idx];
+        monitor_values[idx] = field[field_idx];
+    }
+}
+
+// MARK: computeMonitoringResiduals
+__global__ void computeMonitoringResiduals(float *residuals, float *curr_values, float *prev_values, int num_points)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_points)
+    {
+        residuals[idx] = fabsf(curr_values[idx] - prev_values[idx]);
     }
 }
 
@@ -840,6 +861,42 @@ int main(int argc, char **argv) // for future CLI arguments
     int size = NX * NY * NZ;
     FlowField flow;
 
+    // MARK: monitoring points
+    // Define monitoring points (i, j, k)
+    const int num_monitor_points = 3; // Number of monitoring points
+    int h_monitor_indices[num_monitor_points]; // Array to hold linear indices
+
+    // Monitoring points: 1/4, 1/2, 3/4 along x-axis
+    int monitor_coords[num_monitor_points][3] = {
+        {NX / 4, NY / 2, NZ / 2},
+        {NX / 2, NY / 2, NZ / 2},
+        {3 * NX / 4, NY / 2, NZ / 2}
+    };
+
+    // Compute linear indices
+    for (int n = 0; n < num_monitor_points; n++)
+    {
+        int i = monitor_coords[n][0];
+        int j = monitor_coords[n][1];
+        int k = monitor_coords[n][2];
+        h_monitor_indices[n] = i + j * NX + k * NX * NY;
+    }
+
+    // Device arrays for monitoring indices and field values
+    int *d_monitor_indices;
+    CUDA_CHECK(cudaMalloc(&d_monitor_indices, num_monitor_points * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_monitor_indices, h_monitor_indices, num_monitor_points * sizeof(int), cudaMemcpyHostToDevice));
+
+    // Device arrays for previous and current values
+    float *d_u_monitor_prev, *d_u_monitor_curr;
+    CUDA_CHECK(cudaMalloc(&d_u_monitor_prev, num_monitor_points * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_u_monitor_curr, num_monitor_points * sizeof(float)));
+
+    // Device array for residuals at monitoring points
+    float *d_monitor_residuals;
+    CUDA_CHECK(cudaMalloc(&d_monitor_residuals, num_monitor_points * sizeof(float)));
+
+    // MARK: cfl
     float *d_max_cfl;
     CUDA_CHECK(cudaMalloc(&d_max_cfl, sizeof(float)));
     float target_cfl = 0.5f;
@@ -946,6 +1003,9 @@ int main(int argc, char **argv) // for future CLI arguments
                                         flow.u, flow.v, flow.w, flow.k, flow.epsilon,
                                         size);
 
+        // Copy monitoring points
+        CUDA_CHECK(cudaMemcpy(d_u_monitor_prev, d_u_monitor_curr, num_monitor_points * sizeof(float), cudaMemcpyDeviceToDevice));
+
         // Zero out residuals for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
 
@@ -1031,6 +1091,12 @@ int main(int argc, char **argv) // for future CLI arguments
 
         calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
 
+        // Extract current values at monitoring points
+        int threads_per_block = 128;
+        int blocks_per_grid = (num_monitor_points + threads_per_block - 1) / threads_per_block;
+
+        extractMonitoringValues<<<blocks_per_grid, threads_per_block>>>(flow.u, d_u_monitor_curr, d_monitor_indices, num_monitor_points);
+
         // Calculate residuals
         calculateResiduals<<<grid, block>>>(flow.residuals,
                                             flow.u, u_old,
@@ -1039,6 +1105,21 @@ int main(int argc, char **argv) // for future CLI arguments
                                             flow.k, k_old,
                                             flow.epsilon, eps_old,
                                             size);
+
+        // Calculate monitoring residuals
+        computeMonitoringResiduals<<<blocks_per_grid, threads_per_block>>>(d_monitor_residuals, d_u_monitor_curr, d_u_monitor_prev, num_monitor_points);
+
+        float h_monitor_residuals[num_monitor_points];
+        CUDA_CHECK(cudaMemcpy(h_monitor_residuals, d_monitor_residuals, num_monitor_points * sizeof(float), cudaMemcpyDeviceToHost));
+
+        // Output residuals at monitoring points
+        printf("Monitoring point residuals at step %d:\n", step);
+        for (int n = 0; n < num_monitor_points; n++)
+        {
+            printf("Point (%d, %d, %d): Residual = %.6e\n",
+                monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
+                h_monitor_residuals[n]);
+        }
 
         // Check convergence
         float h_residuals[5];
