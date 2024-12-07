@@ -1,0 +1,650 @@
+// main.cu
+#include <cuda_runtime.h>
+#include <stdio.h>
+#include <math.h>
+
+// k-epsilon parametesr
+#define C_mu 0.09f
+#define C_1 1.44f
+#define C_2 1.92f
+#define SIGMA_k 1.0f
+#define SIGMA_epsilon 1.3f
+
+// Wall law parameters
+#define KAPPA 0.41f       // Von Karmann constant
+#define E_CONST 9.793f    // Wall roughness parameter
+#define Y_PLUS_MIN 11.63f // Lower bound for log-law region
+#define Y_PLUS_MAX 300.0f // Upper bound for log-law region
+
+// Constants for SIMPLE-C algorithm
+#define P_REF 101325.0f // Reference pressure (Pa)
+#define ALPHA_P 0.8f    // Pressure under-relaxation
+#define MAX_PRESSURE_ITER 50
+#define PRESSURE_TOLERANCE 1e-6f
+
+// Simulation parameters
+#define DT 0.001f  // Time step
+#define DX 0.1f    // Grid spacing
+#define NU 1.5e-5f // Kinematic viscosity
+#define RHO 1.0f   // Density
+
+// Grid parameters
+#define NX 128       // Grid size in x-direction
+#define NY 128       // Grid size in y-direction
+#define NZ 128       // Grid size in z-direction
+#define BLOCK_SIZE 8 // Block size for CUDA shared memory
+
+// Object parameters
+#define SPHERE_RADIUS 10.0f
+#define SPHERE_CENTER_X (NX / 2.0f)
+#define SPHERE_CENTER_Y (NY / 2.0f)
+#define SPHERE_CENTER_Z (NZ / 2.0f)
+
+// Boundary conditions
+#define INLET_VELOCITY 1.0f
+#define CONVECTIVE_VELOCITY INLET_VELOCITY
+#define INLET_TURBULENT_INTENSITY 0.05f
+#define OUTLET_PRESSURE P_REF
+
+// MARK: def FlowField
+struct FlowField
+{
+    float *u, *v, *w; // Velocity components
+    float *p;         // Pressure
+    float *k;         // Turbulent kinetic energy
+    float *epsilon;   // Dissipation rate
+    float *nut;       // Turbulent viscosity
+};
+
+// MARK: calculateTurbulentViscosity
+__global__ void calculateTurbulentViscosity(float *nut, float *k, float *epsilon, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        nut[idx] = C_mu * (k[idx] * k[idx]) / epsilon[idx]; // eddy viscosity model
+    }
+}
+
+// MARK: initializeFlowField
+void initializeFlowField(FlowField *flow, int size)
+{
+    cudaMalloc(&flow->u, size * sizeof(float));
+    cudaMalloc(&flow->v, size * sizeof(float));
+    cudaMalloc(&flow->w, size * sizeof(float));
+    cudaMalloc(&flow->p, size * sizeof(float));
+    cudaMalloc(&flow->k, size * sizeof(float));
+    cudaMalloc(&flow->epsilon, size * sizeof(float));
+    cudaMalloc(&flow->nut, size * sizeof(float));
+}
+
+// MARK: initializePressure
+__global__ void initializePressure(float *p, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        p[idx] = P_REF;
+    }
+}
+
+// MARK: initializeFields
+__global__ void initializeFields(float *k, float *epsilon, float *u, float *v, float *w,
+                                 int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx < size)
+    {
+        int k_idx = idx / (nx * ny);
+        int j = (idx - k_idx * nx * ny) / nx;
+        int i = idx - k_idx * nx * ny - j * nx;
+
+        // Base turbulence values
+        float u_mag = sqrtf(u[idx] * u[idx] + v[idx] * v[idx] + w[idx] * w[idx]);
+        float I = 0.05f; // Initial turbulence intensity (5%)
+
+        if (isInsideSphere(i, j, k_idx))
+        {
+            k[idx] = 1e-10f;
+            epsilon[idx] = 1e-10f;
+        }
+        else
+        {
+            // k = 3/2 * (U*I)^2
+            k[idx] = 1.5f * powf(u_mag * I, 2.0f);
+
+            // epsilon = C_mu^(3/4) * k^(3/2) / L
+            float L = 0.07f * SPHERE_RADIUS; // Turbulent length scale
+            epsilon[idx] = powf(C_mu, 0.75f) * powf(k[idx], 1.5f) / L;
+
+            // Ensure minimum values
+            k[idx] = fmaxf(k[idx], 1e-10f);
+            epsilon[idx] = fmaxf(epsilon[idx], 1e-10f);
+        }
+    }
+}
+
+// MARK: computeDivergence
+__global__ void computeDivergence(float *div, float *u, float *v, float *w, int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx < size)
+    {
+        float du_dx = (u[idx + 1] - u[idx - 1]) / (2.0f * DX);
+        float dv_dy = (v[idx + nx] - v[idx - nx]) / (2.0f * DX);
+        float dw_dz = (w[idx + nx * ny] - w[idx - nx * ny]) / (2.0f * DX);
+
+        div[idx] = du_dx + dv_dy + dw_dz;
+    }
+}
+
+// MARK: calculatePressureCorrection
+__global__ void calculatePressureCorrection(float *p_corr, float *div, float *ap, int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx > nx && idx < size - nx)
+    {
+        if (!isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
+        {
+            float ae = 1.0f / (DX * DX);
+            float aw = ae;
+            float an = ae;
+            float as = ae;
+            float at = ae;
+            float ab = ae;
+
+            ap[idx] = -(ae + aw + an + as + at + ab);
+
+            p_corr[idx] = -(div[idx] -
+                            ae * p_corr[idx + 1] - aw * p_corr[idx - 1] -
+                            an * p_corr[idx + nx] - as * p_corr[idx - nx] -
+                            at * p_corr[idx + nx * ny] - ab * p_corr[idx - nx * ny]) /
+                          ap[idx];
+        }
+    }
+}
+
+// MARK: correctVelocities
+__global__ void correctVelocities(float *u, float *v, float *w, float *p_corr,
+                                  float *ap, int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx > nx && idx < size - nx && !isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
+    {
+        // Velocity corrections
+        float dp_dx = (p_corr[idx + 1] - p_corr[idx - 1]) / (2.0f * DX);
+        float dp_dy = (p_corr[idx + nx] - p_corr[idx - nx]) / (2.0f * DX);
+        float dp_dz = (p_corr[idx + nx * ny] - p_corr[idx - nx * ny]) / (2.0f * DX);
+
+        u[idx] -= dp_dx / ap[idx];
+        v[idx] -= dp_dy / ap[idx];
+        w[idx] -= dp_dz / ap[idx];
+    }
+}
+
+// MARK: updatePressure
+__global__ void updatePressure(float *p, float *p_corr, float alpha, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        p[idx] += alpha * p_corr[idx];
+    }
+}
+
+// MARK: calculateYPlus
+__device__ float calculateYPlus(float uTau, float yWall, float nu)
+{
+    return uTau * yWall / nu;
+}
+
+// MARK: calculateUTau
+__device__ float calculateUTau(float uTangential, float yWall, float nu)
+{
+    // Initial guess for friction velocity
+    float uTau = sqrtf(nu * fabsf(uTangential) / yWall);
+
+    // Newton-Raphson iteration to solve wall function
+    for (int iter = 0; iter < 10; iter++)
+    {
+        float yPlus = calculateYPlus(uTau, yWall, nu);
+        if (yPlus < Y_PLUS_MIN)
+        {
+            // Viscous sublayer
+            uTau = sqrtf(nu * fabsf(uTangential) / yWall);
+            break;
+        }
+
+        float u_plus = (1.0f / KAPPA) * logf(E_CONST * yPlus);
+        float f = uTau * u_plus - fabsf(uTangential);
+        float df = u_plus + uTau / (KAPPA * yPlus);
+        uTau -= f / df;
+
+        if (fabsf(f) < 1e-6f)
+            break;
+    }
+    return uTau;
+}
+
+// MARK: applyWallFunctions
+__device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
+                                   float uTangential, float yWall, float nu)
+{
+    float uTau = calculateUTau(uTangential, yWall, nu);
+    float yPlus = calculateYPlus(uTau, yWall, nu);
+
+    if (yPlus < Y_PLUS_MIN)
+    {
+        // Viscous sublayer
+        u_new = uTangential * yPlus / Y_PLUS_MIN;
+        k_new = 0.0f;
+        eps_new = 2.0f * nu * k_new / (yWall * yWall);
+    }
+    else
+    {
+        // Log-law region
+        u_new = (uTau / KAPPA) * logf(E_CONST * yPlus);
+        k_new = uTau * uTau / sqrtf(C_mu);
+        eps_new = (uTau * uTau * uTau) / (KAPPA * yWall);
+    }
+}
+
+// MARK: applyBoundaryConditions
+__global__ void applyBoundaryConditions(float *u, float *v, float *w, float *p,
+                                        float *k, float *epsilon, int nx, int ny, int nz)
+{
+    // Use threadIdx for j and k coordinates
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k_idx = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (j < ny && k_idx < nz)
+    {
+        // Inlet boundary (x = 0)
+        int inlet_idx = j * nx + k_idx * nx * ny;
+        if (!isInsideSphere(0, j, k_idx)) // Check if not inside sphere
+        {
+            u[inlet_idx] = getInletVelocityProfile(j, k_idx, ny, nz);
+            v[inlet_idx] = 0.0f;
+            w[inlet_idx] = 0.0f;
+
+            // Set inlet turbulence values
+            float k_inlet, eps_inlet;
+            getInletConditions(k_inlet, eps_inlet, INLET_VELOCITY);
+            k[inlet_idx] = k_inlet;
+            epsilon[inlet_idx] = eps_inlet;
+        }
+        else
+        {
+            // No-slip condition if inside sphere
+            u[inlet_idx] = 0.0f;
+            v[inlet_idx] = 0.0f;
+            w[inlet_idx] = 0.0f;
+            k[inlet_idx] = 1e-10f;
+            epsilon[inlet_idx] = 1e-10f;
+        }
+
+        // Outlet boundary (x = nx-1)
+        int outlet_idx = (nx - 1) + j * nx + k_idx * nx * ny;
+        if (!isInsideSphere(nx - 1, j, k_idx))
+        {
+            // Convective outlet condition: du/dt + U_conv * du/dx = 0
+            float dx_u = (u[outlet_idx] - u[outlet_idx - 1]) / DX;
+            float dx_v = (v[outlet_idx] - v[outlet_idx - 1]) / DX;
+            float dx_w = (w[outlet_idx] - w[outlet_idx - 1]) / DX;
+            float dx_k = (k[outlet_idx] - k[outlet_idx - 1]) / DX;
+            float dx_eps = (epsilon[outlet_idx] - epsilon[outlet_idx - 1]) / DX;
+
+            u[outlet_idx] = u[outlet_idx] - DT * CONVECTIVE_VELOCITY * dx_u;
+            v[outlet_idx] = v[outlet_idx] - DT * CONVECTIVE_VELOCITY * dx_v;
+            w[outlet_idx] = w[outlet_idx] - DT * CONVECTIVE_VELOCITY * dx_w;
+            k[outlet_idx] = k[outlet_idx] - DT * CONVECTIVE_VELOCITY * dx_k;
+            epsilon[outlet_idx] = epsilon[outlet_idx] - DT * CONVECTIVE_VELOCITY * dx_eps;
+
+            // Fixed pressure at outlet
+            p[outlet_idx] = OUTLET_PRESSURE;
+        }
+        else
+        {
+            // Keep existing no-slip conditions for sphere intersection
+            u[outlet_idx] = 0.0f;
+            v[outlet_idx] = 0.0f;
+            w[outlet_idx] = 0.0f;
+            k[outlet_idx] = 1e-10f;
+            epsilon[outlet_idx] = 1e-10f;
+        }
+    }
+}
+
+// MARK: getInletConditions
+__device__ void getInletConditions(float &k_val, float &eps_val, float u_inlet)
+{
+    // Use predefined turbulence intensity
+    float I = INLET_TURBULENT_INTENSITY; // Already defined as 0.05f
+    float L = 0.07f * SPHERE_RADIUS;     // Turbulent length scale
+
+    // Calculate k from turbulence intensity
+    // k = 3/2 * (U*I)^2
+    k_val = 1.5f * powf(u_inlet * I, 2.0f);
+
+    // Calculate epsilon from k and length scale
+    // epsilon = C_mu^(3/4) * k^(3/2) / L
+    eps_val = powf(C_mu, 0.75f) * powf(k_val, 1.5f) / L;
+
+    // Ensure minimum values
+    k_val = fmaxf(k_val, 1e-10f);
+    eps_val = fmaxf(eps_val, 1e-10f);
+}
+
+// MARK: getInletVelocityProfile
+__device__ float getInletVelocityProfile(int j, int k, int ny, int nz)
+{
+    // Example: parabolic profile
+    float y = (j - ny / 2.0f) / (ny / 2.0f);
+    float z = (k - nz / 2.0f) / (nz / 2.0f);
+    float r = sqrtf(y * y + z * z);
+    return INLET_VELOCITY * (1.0f - r * r);
+}
+
+// MARK: isInsideSphere
+__device__ bool isInsideSphere(int i, int j, int k)
+{
+    float x = i * DX - SPHERE_CENTER_X * DX;
+    float y = j * DX - SPHERE_CENTER_Y * DX;
+    float z = k * DX - SPHERE_CENTER_Z * DX;
+    float r2 = x * x + y * y + z * z;
+    return r2 <= SPHERE_RADIUS * SPHERE_RADIUS;
+}
+
+// MARK: isNearSphere
+__device__ bool isNearSphere(int i, int j, int k)
+{
+    float x = i * DX - SPHERE_CENTER_X * DX;
+    float y = j * DX - SPHERE_CENTER_Y * DX;
+    float z = k * DX - SPHERE_CENTER_Z * DX;
+    float r2 = x * x + y * y + z * z;
+    float outer2 = (SPHERE_RADIUS + 1.5f * DX) * (SPHERE_RADIUS + 1.5f * DX);
+    return r2 <= outer2;
+}
+
+// MARK: calculateStrainRate
+__device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int nx, int ny, int nz)
+{
+    // Calculate strain rate tensor magnitude
+    float du_dx = (u[idx + 1] - u[idx - 1]) / (2.0f * DX);
+    float dv_dy = (v[idx + nx] - v[idx - nx]) / (2.0f * DX);
+    float dw_dz = (w[idx + nx * ny] - w[idx - nx * ny]) / (2.0f * DX);
+
+    float du_dy = (u[idx + nx] - u[idx - nx]) / (2.0f * DX);
+    float du_dz = (u[idx + nx * ny] - u[idx - nx * ny]) / (2.0f * DX);
+    float dv_dx = (v[idx + 1] - v[idx - 1]) / (2.0f * DX);
+    float dv_dz = (v[idx + nx * ny] - v[idx - nx * ny]) / (2.0f * DX);
+    float dw_dx = (w[idx + 1] - w[idx - 1]) / (2.0f * DX);
+    float dw_dy = (w[idx + nx] - w[idx - nx]) / (2.0f * DX);
+
+    return sqrtf(2.0f * (du_dx * du_dx + dv_dy * dv_dy + dw_dz * dw_dz +
+                         0.5f * ((du_dy + dv_dx) * (du_dy + dv_dx) +
+                                 (du_dz + dw_dx) * (du_dz + dw_dx) +
+                                 (dv_dz + dw_dy) * (dv_dz + dw_dy))));
+}
+
+// MARK: solveKEquation
+__global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u, float *v, float *w,
+                               float *nut, int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx > nx && idx < size - nx && !isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
+    {
+        // Production term
+        float S = calculateStrainRate(u, v, w, idx, nx, ny, nz);
+        float P_k = nut[idx] * S * S;
+
+        // Diffusion term
+        float k_lap = (k[idx + 1] + k[idx - 1] + k[idx + nx] + k[idx - nx] +
+                       k[idx + nx * ny] + k[idx - nx * ny] - 6.0f * k[idx]) /
+                      (DX * DX);
+        float diff_k = (NU + nut[idx] / SIGMA_k) * k_lap;
+
+        // Update k
+        k_new[idx] = k[idx] + DT * (P_k - epsilon[idx] + diff_k);
+        k_new[idx] = fmaxf(k_new[idx], 1e-10f); // Ensure k stays positive
+    }
+}
+
+// MARK: solveEpsilonEquation
+__global__ void solveEpsilonEquation(float *eps_new, float *k, float *epsilon, float *u, float *v,
+                                     float *w, float *nut, int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx > nx && idx < size - nx && !isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
+    {
+        // Production term
+        float S = calculateStrainRate(u, v, w, idx, nx, ny, nz);
+        float P_k = nut[idx] * S * S;
+
+        // Diffusion term
+        float eps_lap = (epsilon[idx + 1] + epsilon[idx - 1] + epsilon[idx + nx] + epsilon[idx - nx] +
+                         epsilon[idx + nx * ny] + epsilon[idx - nx * ny] - 6.0f * epsilon[idx]) /
+                        (DX * DX);
+        float diff_eps = (NU + nut[idx] / SIGMA_epsilon) * eps_lap;
+
+        // Update epsilon
+        eps_new[idx] = epsilon[idx] + DT * ((C_1 * epsilon[idx] * P_k / k[idx]) -
+                                            (C_2 * epsilon[idx] * epsilon[idx] / k[idx]) +
+                                            diff_eps);
+        eps_new[idx] = fmaxf(eps_new[idx], 1e-10f); // Ensure epsilon stays positive
+    }
+}
+
+// MARK: solveXMomentum
+__global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
+                               float *p, float *nut, float *k, float *epsilon,
+                               int nx, int ny, int nz)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
+    if (idx > nx && idx < size - nx && idx % nx != 0 && idx % nx != nx - 1)
+    {
+        int k_idx = idx / (nx * ny);
+        int j = (idx - k_idx * nx * ny) / nx;
+        int i = idx - k_idx * nx * ny - j * nx;
+
+        // Check if point is inside or near sphere
+        if (isInsideSphere(i, j, k_idx))
+        {
+            u_new[idx] = 0.0f; // No-slip condition inside sphere
+            return;
+        }
+
+        if (isNearSphere(i, j, k_idx))
+        {
+            float x = i * DX - SPHERE_CENTER_X * DX;
+            float y = j * DX - SPHERE_CENTER_Y * DX;
+            float z = k_idx * DX - SPHERE_CENTER_Z * DX;
+            float r = sqrtf(x * x + y * y + z * z);
+
+            if (r > SPHERE_RADIUS)
+            {
+                float yWall = r - SPHERE_RADIUS;
+                float uTangential = u[idx]; // Parallel velocity component
+
+                // Apply wall functions
+                float k_new_val, eps_new_val;
+                applyWallFunctions(u_new[idx], k_new_val, eps_new_val,
+                                   uTangential, yWall, NU);
+
+                // Update turbulence quantities if this is first cell off wall
+                if (yWall < 1.5f * DX)
+                {
+                    k[idx] = k_new_val;
+                    epsilon[idx] = eps_new_val;
+                }
+                return;
+            }
+        }
+
+        // Original momentum equation for fluid region
+        float u_dx = (u[idx + 1] - u[idx - 1]) / (2.0f * DX);
+        float u_dy = (u[idx + nx] - u[idx - nx]) / (2.0f * DX);
+        float u_dz = (u[idx + nx * ny] - u[idx - nx * ny]) / (2.0f * DX);
+
+        float convection = -(u[idx] * u_dx + v[idx] * u_dy + w[idx] * u_dz);
+        float pressure_grad = -(p[idx + 1] - p[idx - 1]) / (2.0f * DX * RHO);
+        float lap_u = (u[idx + 1] + u[idx - 1] + u[idx + nx] + u[idx - nx] +
+                       u[idx + nx * ny] + u[idx - nx * ny] - 6.0f * u[idx]) /
+                      (DX * DX);
+
+        float viscous = (NU + nut[idx]) * lap_u;
+        u_new[idx] = u[idx] + DT * (viscous + convection + pressure_grad);
+    }
+}
+
+// MARK: solveYMomentum
+__global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
+                               float *p, float *nut, int nx, int ny, int nz)
+{
+    // Similar to X-momentum but for v component
+    // ... (implement similar logic for Y direction)
+}
+
+// MARK: solveZMomentum
+__global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
+                               float *p, float *nut, int nx, int ny, int nz)
+{
+    // Similar to X-momentum but for w component
+    // ... (implement similar logic for Z direction)
+}
+
+// MARK: main
+int main()
+{
+    int size = NX * NY * NZ;
+    FlowField flow;
+
+    // Setup grid and blocks for CUDA
+    dim3 block(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+    dim3 grid((NX + block.x - 1) / block.x,
+              (NY + block.y - 1) / block.y,
+              (NZ + block.z - 1) / block.z);
+
+    // Initialize memory
+    initializeFlowField(&flow, size);
+    initializePressure<<<grid, block>>>(flow.p, size);
+
+    float *u_new, *v_new, *w_new;
+    cudaMalloc(&u_new, size * sizeof(float));
+    cudaMalloc(&v_new, size * sizeof(float));
+    cudaMalloc(&w_new, size * sizeof(float));
+
+    float *k_new, *eps_new;
+    cudaMalloc(&k_new, size * sizeof(float));
+    cudaMalloc(&eps_new, size * sizeof(float));
+
+    float *p_corr, *div, *ap;
+    cudaMalloc(&p_corr, size * sizeof(float));
+    cudaMalloc(&div, size * sizeof(float));
+    cudaMalloc(&ap, size * sizeof(float));
+
+    // Initialize flow field based on boundary conditions
+    float *h_u = new float[size];
+    for (int k = 0; k < NZ; k++)
+    {
+        for (int j = 0; j < NY; j++)
+        {
+            for (int i = 0; i < NX; i++)
+            {
+                int idx = i + j * NX + k * NX * NY;
+                if (i == 0)
+                {
+                    // Inlet
+                    h_u[idx] = INLET_VELOCITY;
+                }
+                else if (i == NX - 1)
+                {
+                    // Outlet
+                    h_u[idx] = h_u[idx - 1];
+                }
+                else
+                {
+                    h_u[idx] = INLET_VELOCITY;
+                }
+            }
+        }
+    }
+    cudaMemcpy(flow.u, h_u, size * sizeof(float), cudaMemcpyHostToDevice);
+    delete[] h_u;
+
+    // Initialize v and w to zero
+    cudaMemset(flow.v, 0, size * sizeof(float));
+    cudaMemset(flow.w, 0, size * sizeof(float));
+
+    // Initialize k and epsilon
+    initializeFields<<<grid, block>>>(flow.k, flow.epsilon, flow.u, flow.v, flow.w,
+                                      NX, NY, NZ);
+
+    // Initialize turbulent viscosity
+    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+
+    // MARK: time stepping
+    for (int step = 0; step < 1000; step++)
+    {
+        // Momentum predictor
+        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w,
+                                        flow.p, flow.nut, flow.k, flow.epsilon,
+                                        NX, NY, NZ);
+        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w,
+                                        flow.p, flow.nut, NX, NY, NZ);
+        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w,
+                                        flow.p, flow.nut, NX, NY, NZ);
+
+        // Apply boundary conditions
+        applyBoundaryConditions<<<dim3(1, (NY + block.y - 1) / block.y, (NZ + block.z - 1) / block.z),
+                                  dim3(1, block.y, block.z)>>>(
+            u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
+
+        // SIMPLEC pressure correction loop
+        for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
+        {
+            // Calculate divergence
+            computeDivergence<<<grid, block>>>(div, u_new, v_new, w_new, NX, NY, NZ);
+
+            // Solve pressure correction equation
+            calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
+
+            // Correct velocities
+            correctVelocities<<<grid, block>>>(u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
+
+            // Update pressure
+            updatePressure<<<grid, block>>>(flow.p, p_corr, ALPHA_P, size);
+        }
+
+        // Solve turbulence equations
+        solveKEquation<<<grid, block>>>(k_new, flow.k, flow.epsilon, flow.u,
+                                        flow.v, flow.w, flow.nut, NX, NY, NZ);
+        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k, flow.epsilon,
+                                              flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
+
+        // Update fields
+        cudaMemcpy(flow.u, u_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.v, v_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.w, w_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.k, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.epsilon, eps_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+
+        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+    }
+
+    return 0;
+}
