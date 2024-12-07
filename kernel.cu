@@ -62,10 +62,9 @@ int main(int argc, char **argv) // for future CLI arguments
     // MARK: cfl
     float *d_max_cfl;
     CUDA_CHECK(cudaMalloc(&d_max_cfl, sizeof(float)));
-    float target_cfl = 0.5f;
-    float dt = DT; // initialize time step as DT
+    float dt = DT; // initialize time step as DT param val
 
-    // Setup grid and blocks for CUDA
+    // Set up grid and blocks for CUDA
     dim3 block(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
     dim3 grid((NX + block.x - 1) / block.x,
               (NY + block.y - 1) / block.y,
@@ -147,7 +146,6 @@ int main(int argc, char **argv) // for future CLI arguments
     calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
 
     printf("Initialization complete. Starting time stepping...\n");
-    printf("Step #, Residuals (u, v, w, k, epsilon)\n");
 
     // Synchronize all CUDA threads to ensure initialization is complete
     cudaDeviceSynchronize();
@@ -177,14 +175,14 @@ int main(int argc, char **argv) // for future CLI arguments
         converter.i = *(unsigned int *)&current_cfl;
         current_cfl = converter.f;
 
-        // UNCOMMENT TO ENABLE CFL ADJUSTMENT
         // Adjust timestep based on CFL
-        // if (current_cfl > 1e-6f)
-        // {
-        //     dt = target_cfl * DX / current_cfl;
-        //     dt = fmaxf(dt, MIN_DT);
-        //     dt = fminf(dt, MAX_DT);
-        // }
+        if (current_cfl > 1e-6f)
+        {
+            // Target CFL is 0.5 for stability
+            dt = 0.5 * DX / current_cfl;
+            dt = fmaxf(dt, MIN_DT);
+            dt = fminf(dt, MAX_DT);
+        }
 
         // Momentum predictor
         solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
@@ -203,9 +201,7 @@ int main(int argc, char **argv) // for future CLI arguments
         CUDA_CHECK(cudaGetLastError());
 
         // Apply boundary conditions
-        applyBoundaryConditions<<<dim3(1, (NY + block.y - 1) / block.y, (NZ + block.z - 1) / block.z),
-                                  dim3(1, block.y, block.z)>>>(
-            u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
+        applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
 
         // SIMPLEC pressure correction loop
         if (SIMPLEC_ENABLED == true){
@@ -277,14 +273,14 @@ int main(int argc, char **argv) // for future CLI arguments
         float h_monitor_residuals[num_monitor_points];
         CUDA_CHECK(cudaMemcpy(h_monitor_residuals, d_monitor_residuals, num_monitor_points * sizeof(float), cudaMemcpyDeviceToHost));
 
-        // Output residuals at monitoring points
-        printf("Monitoring point residuals at step %d:\n", step);
-        for (int n = 0; n < num_monitor_points; n++)
-        {
-            printf("Point (%d, %d, %d): Residual = %.6e\n",
-                monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
-                h_monitor_residuals[n]);
-        }
+        // // Output residuals at monitoring points
+        // printf("Monitoring point residuals at step %d:\n", step);
+        // for (int n = 0; n < num_monitor_points; n++)
+        // {
+        //     printf("Point (%d, %d, %d): Residual = %.6e\n",
+        //         monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
+        //         h_monitor_residuals[n]);
+        // }
 
         // Check convergence
         float h_residuals[5];
@@ -321,18 +317,17 @@ int main(int argc, char **argv) // for future CLI arguments
             prev_residual_sum = residual_sum;
         }
 
-        // Output every step during development
-        printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
-               step, h_residuals[0], h_residuals[1], h_residuals[2],
-               h_residuals[3], h_residuals[4]);
-        printf("Max CFL = %.2f, dt = %.2e\n", current_cfl, dt);
-
         if (step % 100 == 0)
         {
-            printf("Step #, Residuals (u, v, w, k, epsilon)\n");
+            printf("Step #: Residuals = u v w k epsilon\n");
+            printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
+               step, h_residuals[0], h_residuals[1], h_residuals[2],
+               h_residuals[3], h_residuals[4]);
+            printf("Max CFL = %.2f, dt = %.2e\n\n", current_cfl, dt);
             saveFieldData(&flow, step, NX, NY, NZ);
         }
     }
+    printf("Simulation complete\n");
 
     // Cleanup
     cudaFree(u_old);

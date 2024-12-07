@@ -12,7 +12,7 @@
 #define Y_PLUS_MAX 300.0f // Upper bound for log-law region
 
 // Constants for SIMPLEC algorithm
-#define SIMPLEC_ENABLED 0
+#define SIMPLEC_ENABLED 1
 #define P_REF 101325.0f // Reference pressure (Pa)
 #define ALPHA_P 0.2f    // Pressure under-relaxation
 #define ALPHA_U 0.8f    // Velocity under-relaxation
