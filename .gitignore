@@ -1,1 +1,4 @@
 .vs/
+sphereSolver/*
+x64/*
+*.dat

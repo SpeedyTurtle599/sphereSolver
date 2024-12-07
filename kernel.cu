@@ -1,4 +1,4 @@
-// main.cu
+﻿// main.cu
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <device_atomic_functions.h>
@@ -62,26 +62,26 @@
 __device__ bool isInsideSphere(int i, int j, int k);
 __device__ bool isNearSphere(int i, int j, int k);
 __device__ float getInletVelocityProfile(int j, int k, int ny, int nz);
-__device__ void getInletConditions(float &k_val, float &eps_val, float u_inlet);
+__device__ void getInletConditions(float& k_val, float& eps_val, float u_inlet);
 __device__ float calculateYPlus(float uTau, float yWall, float nu);
 __device__ float calculateUTau(float uTangential, float yWall, float nu);
-__device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
-                                   float uTangential, float yWall, float nu);
-__device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int nx, int ny, int nz);
+__device__ void applyWallFunctions(float& u_new, float& k_new, float& eps_new,
+    float uTangential, float yWall, float nu);
+__device__ float calculateStrainRate(float* u, float* v, float* w, int idx, int nx, int ny, int nz);
 
 // MARK: def FlowField
 struct FlowField
 {
-    float *u, *v, *w; // Velocity components
-    float *p;         // Pressure
-    float *k;         // Turbulent kinetic energy
-    float *epsilon;   // Dissipation rate
-    float *nut;       // Turbulent viscosity
-    float *residuals; // Residuals for SIMPLE-C and k-epsilon models
+    float* u, * v, * w; // Velocity components
+    float* p;         // Pressure
+    float* k;         // Turbulent kinetic energy
+    float* epsilon;   // Dissipation rate
+    float* nut;       // Turbulent viscosity
+    float* residuals; // Residuals for SIMPLE-C and k-epsilon models
 };
 
 // MARK: calculateTurbulentViscosity
-__global__ void calculateTurbulentViscosity(float *nut, float *k, float *epsilon, int size)
+__global__ void calculateTurbulentViscosity(float* nut, float* k, float* epsilon, int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
@@ -98,24 +98,24 @@ __device__ float calculateCFL(float u, float v, float w, float dx, float dt)
 }
 
 // MARK: calculateMaxCFL
-__global__ void calculateMaxCFL(float *max_cfl, float *u, float *v, float *w, int size)
+__global__ void calculateMaxCFL(float* max_cfl, float* u, float* v, float* w, int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
     {
         float cfl = calculateCFL(u[idx], v[idx], w[idx], DX, DT);
-        atomicMax((int *)max_cfl, __float_as_int(cfl));
+        atomicMax((int*)max_cfl, __float_as_int(cfl));
     }
 }
 
 // MARK: calculateResiduals
-__global__ void calculateResiduals(float *residuals,
-                                   float *u, float *u_old,
-                                   float *v, float *v_old,
-                                   float *w, float *w_old,
-                                   float *k, float *k_old,
-                                   float *eps, float *eps_old,
-                                   int size)
+__global__ void calculateResiduals(float* residuals,
+    float* u, float* u_old,
+    float* v, float* v_old,
+    float* w, float* w_old,
+    float* k, float* k_old,
+    float* eps, float* eps_old,
+    int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
@@ -130,10 +130,10 @@ __global__ void calculateResiduals(float *residuals,
 }
 
 // MARK: storeOldValues
-__global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
-                               float *k_old, float *eps_old,
-                               float *u, float *v, float *w,
-                               float *k, float *eps, int size)
+__global__ void storeOldValues(float* u_old, float* v_old, float* w_old,
+    float* k_old, float* eps_old,
+    float* u, float* v, float* w,
+    float* k, float* eps, int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
@@ -147,7 +147,7 @@ __global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
 }
 
 // MARK: initializeFlowField
-void initializeFlowField(FlowField *flow, int size)
+void initializeFlowField(FlowField* flow, int size)
 {
     cudaMalloc(&flow->u, size * sizeof(float));
     cudaMalloc(&flow->v, size * sizeof(float));
@@ -160,7 +160,7 @@ void initializeFlowField(FlowField *flow, int size)
 }
 
 // MARK: initializePressure
-__global__ void initializePressure(float *p, int size)
+__global__ void initializePressure(float* p, int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
@@ -170,8 +170,8 @@ __global__ void initializePressure(float *p, int size)
 }
 
 // MARK: initializeFields
-__global__ void initializeFields(float *k, float *epsilon, float *u, float *v, float *w,
-                                 int nx, int ny, int nz)
+__global__ void initializeFields(float* k, float* epsilon, float* u, float* v, float* w,
+    int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -208,7 +208,7 @@ __global__ void initializeFields(float *k, float *epsilon, float *u, float *v, f
 }
 
 // MARK: computeDivergence
-__global__ void computeDivergence(float *div, float *u, float *v, float *w, int nx, int ny, int nz)
+__global__ void computeDivergence(float* div, float* u, float* v, float* w, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -224,7 +224,7 @@ __global__ void computeDivergence(float *div, float *u, float *v, float *w, int 
 }
 
 // MARK: calculatePressureCorrection
-__global__ void calculatePressureCorrection(float *p_corr, float *div, float *ap, int nx, int ny, int nz)
+__global__ void calculatePressureCorrection(float* p_corr, float* div, float* ap, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -243,17 +243,17 @@ __global__ void calculatePressureCorrection(float *p_corr, float *div, float *ap
             ap[idx] = -(ae + aw + an + as + at + ab);
 
             p_corr[idx] = -(div[idx] -
-                            ae * p_corr[idx + 1] - aw * p_corr[idx - 1] -
-                            an * p_corr[idx + nx] - as * p_corr[idx - nx] -
-                            at * p_corr[idx + nx * ny] - ab * p_corr[idx - nx * ny]) /
-                          ap[idx];
+                ae * p_corr[idx + 1] - aw * p_corr[idx - 1] -
+                an * p_corr[idx + nx] - as * p_corr[idx - nx] -
+                at * p_corr[idx + nx * ny] - ab * p_corr[idx - nx * ny]) /
+                ap[idx];
         }
     }
 }
 
 // MARK: correctVelocities
-__global__ void correctVelocities(float *u, float *v, float *w, float *p_corr,
-                                  float *ap, int nx, int ny, int nz)
+__global__ void correctVelocities(float* u, float* v, float* w, float* p_corr,
+    float* ap, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -272,7 +272,7 @@ __global__ void correctVelocities(float *u, float *v, float *w, float *p_corr,
 }
 
 // MARK: updatePressure
-__global__ void updatePressure(float *p, float *p_corr, float alpha, int size)
+__global__ void updatePressure(float* p, float* p_corr, float alpha, int size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
@@ -316,8 +316,8 @@ __device__ float calculateUTau(float uTangential, float yWall, float nu)
 }
 
 // MARK: applyWallFunctions
-__device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
-                                   float uTangential, float yWall, float nu)
+__device__ void applyWallFunctions(float& u_new, float& k_new, float& eps_new,
+    float uTangential, float yWall, float nu)
 {
     float uTau = calculateUTau(uTangential, yWall, nu);
     float yPlus = calculateYPlus(uTau, yWall, nu);
@@ -339,8 +339,8 @@ __device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
 }
 
 // MARK: applyBoundaryConditions
-__global__ void applyBoundaryConditions(float *u, float *v, float *w, float *p,
-                                        float *k, float *epsilon, int nx, int ny, int nz)
+__global__ void applyBoundaryConditions(float* u, float* v, float* w, float* p,
+    float* k, float* epsilon, int nx, int ny, int nz)
 {
     // Use threadIdx for j and k coordinates
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -405,7 +405,7 @@ __global__ void applyBoundaryConditions(float *u, float *v, float *w, float *p,
 }
 
 // MARK: getInletConditions
-__device__ void getInletConditions(float &k_val, float &eps_val, float u_inlet)
+__device__ void getInletConditions(float& k_val, float& eps_val, float u_inlet)
 {
     // Use predefined turbulence intensity
     float I = INLET_TURBULENT_INTENSITY; // Already defined as 0.05f
@@ -456,7 +456,7 @@ __device__ bool isNearSphere(int i, int j, int k)
 }
 
 // MARK: calculateStrainRate
-__device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int nx, int ny, int nz)
+__device__ float calculateStrainRate(float* u, float* v, float* w, int idx, int nx, int ny, int nz)
 {
     // Calculate strain rate tensor magnitude
     float du_dx = (u[idx + 1] - u[idx - 1]) / (2.0f * DX);
@@ -471,13 +471,13 @@ __device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int 
     float dw_dy = (w[idx + nx] - w[idx - nx]) / (2.0f * DX);
 
     return sqrtf(2.0f * (du_dx * du_dx + dv_dy * dv_dy + dw_dz * dw_dz +
-                         0.5f * ((du_dy + dv_dx) * (du_dy + dv_dx) +
-                                 (du_dz + dw_dx) * (du_dz + dw_dx) +
-                                 (dv_dz + dw_dy) * (dv_dz + dw_dy))));
+        0.5f * ((du_dy + dv_dx) * (du_dy + dv_dx) +
+            (du_dz + dw_dx) * (du_dz + dw_dx) +
+            (dv_dz + dw_dy) * (dv_dz + dw_dy))));
 }
 
 // MARK: solveKEquation
-__global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u, float *v, float *w, float *nut, int nx, int ny, int nz)
+__global__ void solveKEquation(float* k_new, float* k, float* epsilon, float* u, float* v, float* w, float* nut, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -490,8 +490,8 @@ __global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u,
 
         // Diffusion term
         float k_lap = (k[idx + 1] + k[idx - 1] + k[idx + nx] + k[idx - nx] +
-                       k[idx + nx * ny] + k[idx - nx * ny] - 6.0f * k[idx]) /
-                      (DX * DX);
+            k[idx + nx * ny] + k[idx - nx * ny] - 6.0f * k[idx]) /
+            (DX * DX);
         float diff_k = (NU + nut[idx] / SIGMA_k) * k_lap;
 
         // Update k
@@ -501,7 +501,7 @@ __global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u,
 }
 
 // MARK: solveEpsilonEquation
-__global__ void solveEpsilonEquation(float *eps_new, float *k, float *epsilon, float *u, float *v, float *w, float *nut, int nx, int ny, int nz)
+__global__ void solveEpsilonEquation(float* eps_new, float* k, float* epsilon, float* u, float* v, float* w, float* nut, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -514,22 +514,22 @@ __global__ void solveEpsilonEquation(float *eps_new, float *k, float *epsilon, f
 
         // Diffusion term
         float eps_lap = (epsilon[idx + 1] + epsilon[idx - 1] + epsilon[idx + nx] + epsilon[idx - nx] +
-                         epsilon[idx + nx * ny] + epsilon[idx - nx * ny] - 6.0f * epsilon[idx]) /
-                        (DX * DX);
+            epsilon[idx + nx * ny] + epsilon[idx - nx * ny] - 6.0f * epsilon[idx]) /
+            (DX * DX);
         float diff_eps = (NU + nut[idx] / SIGMA_epsilon) * eps_lap;
 
         // Update epsilon
         eps_new[idx] = epsilon[idx] + DT * ((C_1 * epsilon[idx] * P_k / k[idx]) -
-                                            (C_2 * epsilon[idx] * epsilon[idx] / k[idx]) +
-                                            diff_eps);
+            (C_2 * epsilon[idx] * epsilon[idx] / k[idx]) +
+            diff_eps);
         eps_new[idx] = fmaxf(eps_new[idx], 1e-10f); // Ensure epsilon stays positive
     }
 }
 
 // MARK: solveXMomentum
-__global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+__global__ void solveXMomentum(float* u_new, float* u, float* v, float* w,
+    float* p, float* nut, float* k, float* epsilon,
+    int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -562,7 +562,7 @@ __global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
                 // Apply wall functions
                 float k_new_val, eps_new_val;
                 applyWallFunctions(u_new[idx], k_new_val, eps_new_val,
-                                   uTangential, yWall, NU);
+                    uTangential, yWall, NU);
 
                 // Update turbulence quantities if this is first cell off wall
                 if (yWall < 1.5f * DX)
@@ -582,8 +582,8 @@ __global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
         float convection = -(u[idx] * u_dx + v[idx] * u_dy + w[idx] * u_dz);
         float pressure_grad = -(p[idx + 1] - p[idx - 1]) / (2.0f * DX * RHO);
         float lap_u = (u[idx + 1] + u[idx - 1] + u[idx + nx] + u[idx - nx] +
-                       u[idx + nx * ny] + u[idx - nx * ny] - 6.0f * u[idx]) /
-                      (DX * DX);
+            u[idx + nx * ny] + u[idx - nx * ny] - 6.0f * u[idx]) /
+            (DX * DX);
 
         float viscous = (NU + nut[idx]) * lap_u;
         u_new[idx] = u[idx] + dt * (viscous + convection + pressure_grad);
@@ -591,9 +591,9 @@ __global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
 }
 
 // MARK: solveYMomentum
-__global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+__global__ void solveYMomentum(float* v_new, float* u, float* v, float* w,
+    float* p, float* nut, float* k, float* epsilon,
+    int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -626,7 +626,7 @@ __global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
                 // Apply wall functions
                 float k_new_val, eps_new_val;
                 applyWallFunctions(v_new[idx], k_new_val, eps_new_val,
-                                   vTangential, yWall, NU);
+                    vTangential, yWall, NU);
 
                 // Update turbulence quantities if this is first cell off wall
                 if (yWall < 1.5f * DX)
@@ -646,8 +646,8 @@ __global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
         float convection = -(u[idx] * v_dx + v[idx] * v_dy + w[idx] * v_dz);
         float pressure_grad = -(p[idx + nx] - p[idx - nx]) / (2.0f * DX * RHO);
         float lap_v = (v[idx + 1] + v[idx - 1] + v[idx + nx] + v[idx - nx] +
-                       v[idx + nx * ny] + v[idx - nx * ny] - 6.0f * v[idx]) /
-                      (DX * DX);
+            v[idx + nx * ny] + v[idx - nx * ny] - 6.0f * v[idx]) /
+            (DX * DX);
 
         float viscous = (NU + nut[idx]) * lap_v;
         v_new[idx] = v[idx] + dt * (viscous + convection + pressure_grad);
@@ -655,9 +655,9 @@ __global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
 }
 
 // MARK: solveZMomentum
-__global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+__global__ void solveZMomentum(float* w_new, float* u, float* v, float* w,
+    float* p, float* nut, float* k, float* epsilon,
+    int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
@@ -690,7 +690,7 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
                 // Apply wall functions
                 float k_new_val, eps_new_val;
                 applyWallFunctions(w_new[idx], k_new_val, eps_new_val,
-                                   wTangential, yWall, NU);
+                    wTangential, yWall, NU);
 
                 // Update turbulence quantities if this is first cell off wall
                 if (yWall < 1.5f * DX)
@@ -710,8 +710,8 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
         float convection = -(u[idx] * w_dx + v[idx] * w_dy + w[idx] * w_dz);
         float pressure_grad = -(p[idx + nx * ny] - p[idx - nx * ny]) / (2.0f * DX * RHO);
         float lap_w = (w[idx + 1] + w[idx - 1] + w[idx + nx] + w[idx - nx] +
-                       w[idx + nx * ny] + w[idx - nx * ny] - 6.0f * w[idx]) /
-                      (DX * DX);
+            w[idx + nx * ny] + w[idx - nx * ny] - 6.0f * w[idx]) /
+            (DX * DX);
 
         float viscous = (NU + nut[idx]) * lap_w;
         w_new[idx] = w[idx] + dt * (viscous + convection + pressure_grad);
@@ -719,17 +719,16 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
 }
 
 // MARK: saveFieldData
-void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
-{
+void saveFieldData(FlowField* flow, int step, int nx, int ny, int nz) {
     char filename[256];
     sprintf(filename, "velocity_field_%06d.dat", step);
-    FILE *fp = fopen(filename, "w");
+    FILE* fp = fopen(filename, "w");
 
     // Allocate host memory for the field data
     int size = nx * ny * nz;
-    float *h_u = new float[size];
-    float *h_v = new float[size];
-    float *h_w = new float[size];
+    float* h_u = new float[size];
+    float* h_v = new float[size];
+    float* h_w = new float[size];
 
     // Copy data from device to host
     cudaMemcpy(h_u, flow->u, size * sizeof(float), cudaMemcpyDeviceToHost);
@@ -741,21 +740,18 @@ void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
     fprintf(fp, "# x y z u v w velocity_magnitude\n");
 
     // Write field data
-    for (int k = 0; k < nz; k++)
-    {
-        for (int j = 0; j < ny; j++)
-        {
-            for (int i = 0; i < nx; i++)
-            {
+    for (int k = 0; k < nz; k++) {
+        for (int j = 0; j < ny; j++) {
+            for (int i = 0; i < nx; i++) {
                 int idx = i + j * nx + k * nx * ny;
                 float x = i * DX;
                 float y = j * DX;
                 float z = k * DX;
                 float vel_mag = sqrtf(h_u[idx] * h_u[idx] +
-                                      h_v[idx] * h_v[idx] +
-                                      h_w[idx] * h_w[idx]);
+                    h_v[idx] * h_v[idx] +
+                    h_w[idx] * h_w[idx]);
                 fprintf(fp, "%f %f %f %f %f %f %f\n",
-                        x, y, z, h_u[idx], h_v[idx], h_w[idx], vel_mag);
+                    x, y, z, h_u[idx], h_v[idx], h_w[idx], vel_mag);
             }
         }
     }
@@ -772,7 +768,7 @@ int main()
     int size = NX * NY * NZ;
     FlowField flow;
 
-    float *d_max_cfl;
+    float* d_max_cfl;
     cudaMalloc(&d_max_cfl, sizeof(float));
     float target_cfl = 0.5f;
     float dt = DT; // initialize time step as DT
@@ -780,36 +776,36 @@ int main()
     // Setup grid and blocks for CUDA
     dim3 block(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
     dim3 grid((NX + block.x - 1) / block.x,
-              (NY + block.y - 1) / block.y,
-              (NZ + block.z - 1) / block.z);
+        (NY + block.y - 1) / block.y,
+        (NZ + block.z - 1) / block.z);
 
     // Initialize memory
     initializeFlowField(&flow, size);
-    initializePressure<<<grid, block>>>(flow.p, size);
+    initializePressure << <grid, block >> > (flow.p, size);
 
-    float *u_old, *v_old, *w_old, *k_old, *eps_old;
+    float* u_old, * v_old, * w_old, * k_old, * eps_old;
     cudaMalloc(&u_old, size * sizeof(float));
     cudaMalloc(&v_old, size * sizeof(float));
     cudaMalloc(&w_old, size * sizeof(float));
     cudaMalloc(&k_old, size * sizeof(float));
     cudaMalloc(&eps_old, size * sizeof(float));
 
-    float *u_new, *v_new, *w_new;
+    float* u_new, * v_new, * w_new;
     cudaMalloc(&u_new, size * sizeof(float));
     cudaMalloc(&v_new, size * sizeof(float));
     cudaMalloc(&w_new, size * sizeof(float));
 
-    float *k_new, *eps_new;
+    float* k_new, * eps_new;
     cudaMalloc(&k_new, size * sizeof(float));
     cudaMalloc(&eps_new, size * sizeof(float));
 
-    float *p_corr, *div, *ap;
+    float* p_corr, * div, * ap;
     cudaMalloc(&p_corr, size * sizeof(float));
     cudaMalloc(&div, size * sizeof(float));
     cudaMalloc(&ap, size * sizeof(float));
 
     // Initialize flow field based on boundary conditions
-    float *h_u = new float[size];
+    float* h_u = new float[size];
     for (int k = 0; k < NZ; k++)
     {
         for (int j = 0; j < NY; j++)
@@ -842,26 +838,26 @@ int main()
     cudaMemset(flow.w, 0, size * sizeof(float));
 
     // Initialize k and epsilon
-    initializeFields<<<grid, block>>>(flow.k, flow.epsilon, flow.u, flow.v, flow.w,
-                                      NX, NY, NZ);
+    initializeFields << <grid, block >> > (flow.k, flow.epsilon, flow.u, flow.v, flow.w,
+        NX, NY, NZ);
 
     // Initialize turbulent viscosity
-    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+    calculateTurbulentViscosity << <grid, block >> > (flow.nut, flow.k, flow.epsilon, size);
 
     // MARK: time stepping
     for (int step = 0; step < 1000; step++)
     {
         // Copy old values
-        storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old,
-                                        flow.u, flow.v, flow.w, flow.k, flow.epsilon,
-                                        size);
+        storeOldValues << <grid, block >> > (u_old, v_old, w_old, k_old, eps_old,
+            flow.u, flow.v, flow.w, flow.k, flow.epsilon,
+            size);
 
         // Zero out residuals for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
 
         // Calculate maximum CFL
         cudaMemset(d_max_cfl, 0, sizeof(float));
-        calculateMaxCFL<<<grid, block>>>(d_max_cfl, flow.u, flow.v, flow.w, size);
+        calculateMaxCFL << <grid, block >> > (d_max_cfl, flow.u, flow.v, flow.w, size);
 
         float current_cfl;
         cudaMemcpy(&current_cfl, d_max_cfl, sizeof(float), cudaMemcpyDeviceToHost);
@@ -876,44 +872,44 @@ int main()
         }
 
         // Momentum predictor
-        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w,
-                                        flow.p, flow.nut, flow.k, flow.epsilon,
-                                        NX, NY, NZ, dt);
+        solveXMomentum << <grid, block >> > (u_new, flow.u, flow.v, flow.w,
+            flow.p, flow.nut, flow.k, flow.epsilon,
+            NX, NY, NZ, dt);
 
-        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w,
-                                        flow.p, flow.nut, flow.k, flow.epsilon,
-                                        NX, NY, NZ, dt);
+        solveYMomentum << <grid, block >> > (v_new, flow.u, flow.v, flow.w,
+            flow.p, flow.nut, flow.k, flow.epsilon,
+            NX, NY, NZ, dt);
 
-        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w,
-                                        flow.p, flow.nut, flow.k, flow.epsilon,
-                                        NX, NY, NZ, dt);
+        solveZMomentum << <grid, block >> > (w_new, flow.u, flow.v, flow.w,
+            flow.p, flow.nut, flow.k, flow.epsilon,
+            NX, NY, NZ, dt);
 
         // Apply boundary conditions
-        applyBoundaryConditions<<<dim3(1, (NY + block.y - 1) / block.y, (NZ + block.z - 1) / block.z),
-                                  dim3(1, block.y, block.z)>>>(
-            u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
+        applyBoundaryConditions << <dim3(1, (NY + block.y - 1) / block.y, (NZ + block.z - 1) / block.z),
+            dim3(1, block.y, block.z) >> > (
+                u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
 
         // SIMPLEC pressure correction loop
         for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
         {
             // Calculate divergence
-            computeDivergence<<<grid, block>>>(div, u_new, v_new, w_new, NX, NY, NZ);
+            computeDivergence << <grid, block >> > (div, u_new, v_new, w_new, NX, NY, NZ);
 
             // Solve pressure correction equation
-            calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
+            calculatePressureCorrection << <grid, block >> > (p_corr, div, ap, NX, NY, NZ);
 
             // Correct velocities
-            correctVelocities<<<grid, block>>>(u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
+            correctVelocities << <grid, block >> > (u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
 
             // Update pressure
-            updatePressure<<<grid, block>>>(flow.p, p_corr, ALPHA_P, size);
+            updatePressure << <grid, block >> > (flow.p, p_corr, ALPHA_P, size);
         }
 
         // Solve turbulence equations
-        solveKEquation<<<grid, block>>>(k_new, flow.k, flow.epsilon, flow.u,
-                                        flow.v, flow.w, flow.nut, NX, NY, NZ);
-        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k, flow.epsilon,
-                                              flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
+        solveKEquation << <grid, block >> > (k_new, flow.k, flow.epsilon, flow.u,
+            flow.v, flow.w, flow.nut, NX, NY, NZ);
+        solveEpsilonEquation << <grid, block >> > (eps_new, flow.k, flow.epsilon,
+            flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
 
         // Update fields
         cudaMemcpy(flow.u, u_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
@@ -922,21 +918,21 @@ int main()
         cudaMemcpy(flow.k, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.epsilon, eps_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
-        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+        calculateTurbulentViscosity << <grid, block >> > (flow.nut, flow.k, flow.epsilon, size);
 
         // Calculate residuals
-        calculateResiduals<<<grid, block>>>(flow.residuals,
-                                            flow.u, u_old,
-                                            flow.v, v_old,
-                                            flow.w, w_old,
-                                            flow.k, k_old,
-                                            flow.epsilon, eps_old,
-                                            size);
+        calculateResiduals << <grid, block >> > (flow.residuals,
+            flow.u, u_old,
+            flow.v, v_old,
+            flow.w, w_old,
+            flow.k, k_old,
+            flow.epsilon, eps_old,
+            size);
 
         // Check convergence
         float h_residuals[5];
         cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float),
-                   cudaMemcpyDeviceToHost);
+            cudaMemcpyDeviceToHost);
 
         // Normalize and check residuals
         for (int i = 0; i < 5; i++)
@@ -955,8 +951,8 @@ int main()
         if (step % 100 == 0)
         {
             printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
-                   step, h_residuals[0], h_residuals[1], h_residuals[2],
-                   h_residuals[3], h_residuals[4]);
+                step, h_residuals[0], h_residuals[1], h_residuals[2],
+                h_residuals[3], h_residuals[4]);
             printf("Max CFL = %.2f, dt = %.2e\n", current_cfl, dt);
 
             saveFieldData(&flow, step, NX, NY, NZ);
