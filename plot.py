@@ -4,8 +4,12 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm, gridspec
 
 def read_velocity_field(filename):
-    # Read the header to get dimensions
+    # Read the header to get dimensions and sphere info
     with open(filename, 'r') as f:
+        _ = f.readline()  # Skip title
+        _ = f.readline()  # Skip timestep
+        radius_line = f.readline()
+        sphere_radius = float(radius_line.split(':')[1])
         dim_line = f.readline()
         dims = {k: int(v) for k, v in 
                 [item.split('=') for item in dim_line.strip('# \n').split()]}
@@ -15,7 +19,7 @@ def read_velocity_field(filename):
         # Read the data
         data = np.loadtxt(f)
     
-    # Reshape the data into structured grid
+    # Reshape the data
     x = data[:, 0].reshape(dims['nz'], dims['ny'], dims['nx'])
     y = data[:, 1].reshape(dims['nz'], dims['ny'], dims['nx'])
     z = data[:, 2].reshape(dims['nz'], dims['ny'], dims['nx'])
@@ -24,7 +28,7 @@ def read_velocity_field(filename):
     w = data[:, 5].reshape(dims['nz'], dims['ny'], dims['nx'])
     vel_mag = data[:, 6].reshape(dims['nz'], dims['ny'], dims['nx'])
     
-    return x, y, z, u, v, w, vel_mag
+    return x, y, z, u, v, w, vel_mag, sphere_radius
 
 def plot_flow_field(filename):
     x, y, z, u, v, w, vel_mag = read_velocity_field(filename)
