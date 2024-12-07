@@ -2,4 +2,5 @@
 .vscode/
 sphereSolver/*
 x64/*
+headerExperiments/*
 *.dat
