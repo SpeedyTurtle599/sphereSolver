@@ -13,7 +13,7 @@
         }                                                        \
     }
 
-// k-epsilon parametesr
+// k-epsilon parameters
 #define C_mu 0.09f
 #define C_1 1.44f
 #define C_2 1.92f
@@ -26,7 +26,7 @@
 #define Y_PLUS_MIN 11.63f // Lower bound for log-law region
 #define Y_PLUS_MAX 300.0f // Upper bound for log-law region
 
-// Constants for SIMPLE-C algorithm
+// Constants for SIMPLEC algorithm
 #define P_REF 101325.0f // Reference pressure (Pa)
 #define ALPHA_P 0.8f    // Pressure under-relaxation
 #define MAX_PRESSURE_ITER 50
@@ -705,6 +705,50 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
     }
 }
 
+// MARK: saveFieldData
+void saveFieldData(FlowField* flow, int step, int nx, int ny, int nz) {
+    char filename[256];
+    sprintf(filename, "velocity_field_%06d.dat", step);
+    FILE* fp = fopen(filename, "w");
+    
+    // Allocate host memory for the field data
+    int size = nx * ny * nz;
+    float *h_u = new float[size];
+    float *h_v = new float[size];
+    float *h_w = new float[size];
+    
+    // Copy data from device to host
+    cudaMemcpy(h_u, flow->u, size * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_v, flow->v, size * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_w, flow->w, size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Write header with dimensions
+    fprintf(fp, "# nx=%d ny=%d nz=%d\n", nx, ny, nz);
+    fprintf(fp, "# x y z u v w velocity_magnitude\n");
+    
+    // Write field data
+    for(int k = 0; k < nz; k++) {
+        for(int j = 0; j < ny; j++) {
+            for(int i = 0; i < nx; i++) {
+                int idx = i + j*nx + k*nx*ny;
+                float x = i * DX;
+                float y = j * DX;
+                float z = k * DX;
+                float vel_mag = sqrtf(h_u[idx]*h_u[idx] + 
+                                    h_v[idx]*h_v[idx] + 
+                                    h_w[idx]*h_w[idx]);
+                fprintf(fp, "%f %f %f %f %f %f %f\n",
+                        x, y, z, h_u[idx], h_v[idx], h_w[idx], vel_mag);
+            }
+        }
+    }
+    
+    fclose(fp);
+    delete[] h_u;
+    delete[] h_v;
+    delete[] h_w;
+}
+
 // MARK: main
 int main()
 {
@@ -897,6 +941,8 @@ int main()
                    step, h_residuals[0], h_residuals[1], h_residuals[2],
                    h_residuals[3], h_residuals[4]);
             printf("Max CFL = %.2f, dt = %.2e\n", current_cfl, dt);
+
+            saveFieldData(&flow, step, NX, NY, NZ);
         }
     }
 
