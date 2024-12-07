@@ -1,4 +1,5 @@
 .vs/
+.vscode/
 sphereSolver/*
 x64/*
 *.dat

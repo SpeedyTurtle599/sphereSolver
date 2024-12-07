@@ -4,15 +4,17 @@
 #include <device_atomic_functions.h>
 #include <stdio.h>
 #include <math.h>
+#include <float.h>
 
-#define CUDA_CHECK(call)                                         \
-    {                                                            \
-        cudaError_t err = call;                                  \
-        if (err != cudaSuccess)                                  \
-        {                                                        \
-            printf("CUDA error: %s\n", cudaGetErrorString(err)); \
-            exit(1);                                             \
-        }                                                        \
+#define CUDA_CHECK(call)                                                    \
+    {                                                                       \
+        cudaError_t err = call;                                             \
+        if (err != cudaSuccess)                                             \
+        {                                                                   \
+            printf("CUDA error in %s at line %d: %s\n", __FILE__, __LINE__, \
+                   cudaGetErrorString(err));                                \
+            exit(1);                                                        \
+        }                                                                   \
     }
 
 // k-epsilon parameters
@@ -30,19 +32,24 @@
 
 // Constants for SIMPLEC algorithm
 #define P_REF 101325.0f // Reference pressure (Pa)
-#define ALPHA_P 0.3f    // Pressure under-relaxation
-#define ALPHA_U 0.7f    // Velocity under-relaxation
+#define ALPHA_P 0.2f    // Pressure under-relaxation
+#define ALPHA_U 0.8f    // Velocity under-relaxation
 #define ALPHA_K 0.5f    // Turbulent kinetic energy under-relaxation
 #define ALPHA_EPS 0.5f  // Dissipation rate under-relaxation
+#define MIN_PRESSURE_ITER 20
 #define MAX_PRESSURE_ITER 50
 #define PRESSURE_TOLERANCE 1e-6f
 
 // Simulation parameters
-#define DT 0.001f          // Time step
-#define DX 0.1f            // Grid spacing
-#define NU 1.5e-5f         // Kinematic viscosity
-#define RHO 1.0f           // Density
-#define RESIDUAL_TOL 1e-8f // Tolerance for residuals
+#define DT 0.0001f             // Time step
+#define MIN_DT 1e-6f           // Minimum time step
+#define MAX_DT 0.01f           // Maximum time step
+#define DX 0.1f                // Grid spacing
+#define NU 1.5e-5f             // Kinematic viscosity
+#define RHO 1.0f               // Density
+#define RESIDUAL_TOL 1e-8f     // Tolerance for residuals
+#define MIN_ITER 1000          // Minimum number of iterations
+#define MIN_RESIDUAL_CHECK 100 // Check residuals every n iterations
 
 // Grid parameters
 #define NX 128       // Grid size in x-direction
@@ -51,12 +58,12 @@
 #define BLOCK_SIZE 8 // Block size for CUDA shared memory
 
 // Object parameters
-#define SPHERE_RADIUS 10.0f
+#define SPHERE_RADIUS 2.0f
 #define SPHERE_CENTER_X (NX / 2.0f)
 #define SPHERE_CENTER_Y (NY / 2.0f)
 #define SPHERE_CENTER_Z (NZ / 2.0f)
 
-// Boundary conditions
+// Boundary parameters
 #define INLET_VELOCITY 1.0f
 #define CONVECTIVE_VELOCITY INLET_VELOCITY
 #define INLET_TURBULENT_INTENSITY 0.05f
@@ -72,6 +79,30 @@ __device__ float calculateUTau(float uTangential, float yWall, float nu);
 __device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
                                    float uTangential, float yWall, float nu);
 __device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int nx, int ny, int nz);
+
+// MARK: FloatInt union
+union FloatInt
+{
+    float f;
+    unsigned int i;
+};
+
+// MARK: atomicMaxFloat
+__device__ float atomicMaxFloat(float* address, float val)
+{
+    float old = *address, assumed;
+
+    do {
+        assumed = old;
+        old = __int_as_float(atomicCAS(
+            (int*)address,
+            __float_as_int(assumed),
+            __float_as_int(fmaxf(assumed, val))
+        ));
+    } while (assumed < val && old != assumed);
+
+    return old;
+}
 
 // MARK: def FlowField
 struct FlowField
@@ -107,8 +138,11 @@ __global__ void calculateMaxCFL(float *max_cfl, float *u, float *v, float *w, in
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
     {
-        float cfl = calculateCFL(u[idx], v[idx], w[idx], DX, DT);
-        atomicMax((int *)max_cfl, __float_as_int(cfl));
+        float vel_mag = sqrtf(u[idx] * u[idx] + v[idx] * v[idx] + w[idx] * w[idx]);
+        float cfl = vel_mag * DT / DX;
+
+        // Use custom atomicMaxFloat function
+        atomicMaxFloat(max_cfl, cfl);
     }
 }
 
@@ -124,12 +158,18 @@ __global__ void calculateResiduals(float *residuals,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
     {
-        // Calculate squared differences and add atomically
-        atomicAdd(&residuals[0], powf(u[idx] - u_old[idx], 2));
-        atomicAdd(&residuals[1], powf(v[idx] - v_old[idx], 2));
-        atomicAdd(&residuals[2], powf(w[idx] - w_old[idx], 2));
-        atomicAdd(&residuals[3], powf(k[idx] - k_old[idx], 2));
-        atomicAdd(&residuals[4], powf(eps[idx] - eps_old[idx], 2));
+        float du = fabsf(u[idx] - u_old[idx]);
+        float dv = fabsf(v[idx] - v_old[idx]);
+        float dw = fabsf(w[idx] - w_old[idx]);
+        float dk = fabsf(k[idx] - k_old[idx]);
+        float deps = fabsf(eps[idx] - eps_old[idx]);
+
+        // Use custom atomicMaxFloat function
+        atomicMaxFloat(&residuals[0], du);
+        atomicMaxFloat(&residuals[1], dv);
+        atomicMaxFloat(&residuals[2], dw);
+        atomicMaxFloat(&residuals[3], dk);
+        atomicMaxFloat(&residuals[4], deps);
     }
 }
 
@@ -153,14 +193,14 @@ __global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
 // MARK: initializeFlowField
 void initializeFlowField(FlowField *flow, int size)
 {
-    cudaMalloc(&flow->u, size * sizeof(float));
-    cudaMalloc(&flow->v, size * sizeof(float));
-    cudaMalloc(&flow->w, size * sizeof(float));
-    cudaMalloc(&flow->p, size * sizeof(float));
-    cudaMalloc(&flow->k, size * sizeof(float));
-    cudaMalloc(&flow->epsilon, size * sizeof(float));
-    cudaMalloc(&flow->nut, size * sizeof(float));
-    cudaMalloc(&flow->residuals, 5 * sizeof(float)); // u, v, w, k, epsilon
+    CUDA_CHECK(cudaMalloc(&flow->u, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->v, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->w, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->p, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->k, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->epsilon, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->nut, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&flow->residuals, 5 * sizeof(float))); // u, v, w, k, epsilon
 }
 
 // MARK: initializePressure
@@ -282,6 +322,16 @@ __global__ void updatePressure(float *p, float *p_corr, float alpha, int size)
     if (idx < size)
     {
         p[idx] += alpha * p_corr[idx];
+    }
+}
+
+// MARK: underRelaxPressureCorrection
+__global__ void underRelaxPressureCorrection(float *p_corr, float *p_corr_old, float alpha, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        p_corr[idx] = alpha * p_corr[idx] + (1.0f - alpha) * p_corr_old[idx];
     }
 }
 
@@ -431,11 +481,13 @@ __device__ void getInletConditions(float &k_val, float &eps_val, float u_inlet)
 // MARK: getInletVelocityProfile
 __device__ float getInletVelocityProfile(int j, int k, int ny, int nz)
 {
-    // Example: parabolic profile
     float y = (j - ny / 2.0f) / (ny / 2.0f);
     float z = (k - nz / 2.0f) / (nz / 2.0f);
     float r = sqrtf(y * y + z * z);
-    return INLET_VELOCITY * (1.0f - r * r);
+
+    r = fminf(r, 1.0f); // Cap r at 1.0 to prevent negative values
+
+    return INLET_VELOCITY; // * (1.0f - r * r);
 }
 
 // MARK: isInsideSphere
@@ -742,30 +794,28 @@ void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
     cudaMemcpy(h_w, flow->w, size * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Write header with dimensions
-    fprintf(fp, "Data generated by Coveler CFD solver\n");
+    fprintf(fp, "Data generated by CFD solver\n");
     fprintf(fp, "# Time step: %d\n", step);
     fprintf(fp, "# Sphere radius: %f\n", SPHERE_RADIUS);
     fprintf(fp, "# nx=%d ny=%d nz=%d\n", nx, ny, nz);
     fprintf(fp, "# x y z u v w velocity_magnitude\n");
 
     // Write field data
-    for (int k = 0; k < nz; k++)
+    for (int idx = 0; idx < size; idx++)
     {
-        for (int j = 0; j < ny; j++)
-        {
-            for (int i = 0; i < nx; i++)
-            {
-                int idx = i + j * nx + k * nx * ny;
-                float x = i * DX;
-                float y = j * DX;
-                float z = k * DX;
-                float vel_mag = sqrtf(h_u[idx] * h_u[idx] +
-                                      h_v[idx] * h_v[idx] +
-                                      h_w[idx] * h_w[idx]);
-                fprintf(fp, "%f %f %f %f %f %f %f\n",
-                        x, y, z, h_u[idx], h_v[idx], h_w[idx], vel_mag);
-            }
-        }
+        int i = idx % nx;
+        int j = (idx / nx) % ny;
+        int k = idx / (nx * ny);
+
+        float x = i * DX;
+        float y = j * DX;
+        float z = k * DX;
+        float u = h_u[idx];
+        float v = h_v[idx];
+        float w = h_w[idx];
+        float vel_mag = sqrtf(u * u + v * v + w * w);
+
+        fprintf(fp, "%f %f %f %f %f %f %f\n", x, y, z, u, v, w, vel_mag);
     }
 
     fclose(fp);
@@ -775,13 +825,23 @@ void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
 }
 
 // MARK: main
-int main()
+int main(int argc, char **argv) // for future CLI arguments
 {
+    // Print CUDA device info
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    printf("Using GPU: %s\n", prop.name);
+
+    // Print simulation info
+    printf("Starting CFD solver...\n");
+    printf("Grid size: %d x %d x %d\n", NX, NY, NZ);
+    printf("Block size: %d x %d x %d\n", BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+
     int size = NX * NY * NZ;
     FlowField flow;
 
     float *d_max_cfl;
-    cudaMalloc(&d_max_cfl, sizeof(float));
+    CUDA_CHECK(cudaMalloc(&d_max_cfl, sizeof(float)));
     float target_cfl = 0.5f;
     float dt = DT; // initialize time step as DT
 
@@ -796,28 +856,34 @@ int main()
     initializePressure<<<grid, block>>>(flow.p, size);
 
     float *u_old, *v_old, *w_old, *k_old, *eps_old;
-    cudaMalloc(&u_old, size * sizeof(float));
-    cudaMalloc(&v_old, size * sizeof(float));
-    cudaMalloc(&w_old, size * sizeof(float));
-    cudaMalloc(&k_old, size * sizeof(float));
-    cudaMalloc(&eps_old, size * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&u_old, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&v_old, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&w_old, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&k_old, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&eps_old, size * sizeof(float)));
 
     float *u_new, *v_new, *w_new;
-    cudaMalloc(&u_new, size * sizeof(float));
-    cudaMalloc(&v_new, size * sizeof(float));
-    cudaMalloc(&w_new, size * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&u_new, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&v_new, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&w_new, size * sizeof(float)));
 
     float *k_new, *eps_new;
-    cudaMalloc(&k_new, size * sizeof(float));
-    cudaMalloc(&eps_new, size * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&k_new, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&eps_new, size * sizeof(float)));
 
     float *p_corr, *div, *ap;
-    cudaMalloc(&p_corr, size * sizeof(float));
-    cudaMalloc(&div, size * sizeof(float));
-    cudaMalloc(&ap, size * sizeof(float));
+    CUDA_CHECK(cudaMalloc(&p_corr, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&div, size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&ap, size * sizeof(float)));
 
-    // Initialize flow field based on boundary conditions
+    // MARK: init velocity field
+    // Initialize all velocities with perturbations
     float *h_u = new float[size];
+    float *h_v = new float[size];
+    float *h_w = new float[size];
+
+    srand(time(NULL)); // Add randomization
+
     for (int k = 0; k < NZ; k++)
     {
         for (int j = 0; j < NY; j++)
@@ -825,29 +891,39 @@ int main()
             for (int i = 0; i < NX; i++)
             {
                 int idx = i + j * NX + k * NX * NY;
+
                 if (i == 0)
                 {
-                    // Inlet
-                    h_u[idx] = INLET_VELOCITY;
-                }
-                else if (i == NX - 1)
-                {
-                    // Outlet
-                    h_u[idx] = h_u[idx - 1];
+                    // Inlet conditions
+                    float y = (j - NY / 2.0f) / (NY / 2.0f);
+                    float z = (k - NZ / 2.0f) / (NZ / 2.0f);
+                    float r = sqrtf(y * y + z * z);
+
+                    r = fminf(r, 1.0f); // Cap r at 1.0 to prevent negative values
+
+                    h_u[idx] = INLET_VELOCITY; //* (1.0f - r * r);
+                    h_v[idx] = 0.0f;
+                    h_w[idx] = 0.0f;
                 }
                 else
                 {
-                    h_u[idx] = INLET_VELOCITY;
+                    // Interior with perturbations
+                    float perturbation = 0.1f * (2.0f * rand() / (float)RAND_MAX - 1.0f);
+                    h_u[idx] = INLET_VELOCITY * (1.0f + perturbation);
+                    h_v[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
+                    h_w[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
                 }
             }
         }
     }
-    cudaMemcpy(flow.u, h_u, size * sizeof(float), cudaMemcpyHostToDevice);
-    delete[] h_u;
 
-    // Initialize v and w to zero
-    cudaMemset(flow.v, 0, size * sizeof(float));
-    cudaMemset(flow.w, 0, size * sizeof(float));
+    CUDA_CHECK(cudaMemcpy(flow.u, h_u, size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(flow.v, h_v, size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(flow.w, h_w, size * sizeof(float), cudaMemcpyHostToDevice));
+
+    delete[] h_u;
+    delete[] h_v;
+    delete[] h_w;
 
     // Initialize k and epsilon
     initializeFields<<<grid, block>>>(flow.k, flow.epsilon, flow.u, flow.v, flow.w,
@@ -855,6 +931,12 @@ int main()
 
     // Initialize turbulent viscosity
     calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+
+    printf("Initialization complete. Starting time stepping...\n");
+    printf("Step #, Residuals (u, v, w, k, epsilon)\n");
+
+    // Synchronize all CUDA threads to ensure initialization is complete
+    cudaDeviceSynchronize();
 
     // MARK: time stepping
     for (int step = 0; step < 1000; step++)
@@ -873,14 +955,16 @@ int main()
 
         float current_cfl;
         cudaMemcpy(&current_cfl, d_max_cfl, sizeof(float), cudaMemcpyDeviceToHost);
+        FloatInt converter;
+        converter.i = *(unsigned int *)&current_cfl;
+        current_cfl = converter.f; // super secret hacks they don't teach you in school
 
-        // Adjust timestep
-        if (current_cfl > 0.0f)
+        // Adjust timestep based on CFL
+        if (current_cfl > 1e-6f)
         {
-            dt *= target_cfl / current_cfl;
-            // Add bounds for timestep
-            dt = fmaxf(dt, 1e-6f);
-            dt = fminf(dt, 0.01f);
+            dt = target_cfl * DX / current_cfl;
+            dt = fmaxf(dt, MIN_DT);
+            dt = fminf(dt, MAX_DT);
         }
 
         // Momentum predictor
@@ -907,14 +991,29 @@ int main()
             // Calculate divergence
             computeDivergence<<<grid, block>>>(div, u_new, v_new, w_new, NX, NY, NZ);
 
-            // Solve pressure correction equation
-            calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
+            // Previous pressure correction
+            float *p_corr_old;
+            CUDA_CHECK(cudaMalloc(&p_corr_old, size * sizeof(float)));
+            cudaMemcpy(p_corr_old, p_corr, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
-            // Correct velocities
+            for (int gs_iter = 0; gs_iter < 5; gs_iter++)
+            {
+                calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
+                cudaDeviceSynchronize();
+            }
+
+            // Under-relax pressure correction using kernel
+            underRelaxPressureCorrection<<<grid, block>>>(p_corr, p_corr_old, ALPHA_P, size);
+
             correctVelocities<<<grid, block>>>(u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
 
-            // Update pressure
+            // Update pressure field
             updatePressure<<<grid, block>>>(flow.p, p_corr, ALPHA_P, size);
+
+            cudaFree(p_corr_old);
+
+            if (iter < MIN_PRESSURE_ITER)
+                continue;
         }
 
         // Solve turbulence equations
@@ -943,28 +1042,48 @@ int main()
 
         // Check convergence
         float h_residuals[5];
-        cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float),
-                   cudaMemcpyDeviceToHost);
-
-        // Normalize and check residuals
+        cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
         for (int i = 0; i < 5; i++)
         {
-            h_residuals[i] = sqrtf(h_residuals[i] / size);
+            FloatInt converter;
+            converter.i = *(unsigned int *)&h_residuals[i];
+            h_residuals[i] = converter.f;
         }
 
-        if (h_residuals[0] < RESIDUAL_TOL && h_residuals[1] < RESIDUAL_TOL && h_residuals[2] < RESIDUAL_TOL && h_residuals[3] < RESIDUAL_TOL && h_residuals[4] < RESIDUAL_TOL && step > 100) // Convergence criteria
+        // Normalize and check residuals
+        bool converged = (step > MIN_ITER) &&
+                         (h_residuals[0] < RESIDUAL_TOL) &&
+                         (h_residuals[1] < RESIDUAL_TOL) &&
+                         (h_residuals[2] < RESIDUAL_TOL) &&
+                         (h_residuals[3] < RESIDUAL_TOL) &&
+                         (h_residuals[4] < RESIDUAL_TOL);
+
+        if (converged)
         {
-            printf("Converged at step %d\n", step);
-            break;
+            static float prev_residual_sum = FLT_MAX;
+            float residual_sum = 0;
+            for (int i = 0; i < 5; i++)
+            {
+                residual_sum += h_residuals[i];
+            }
+
+            if (fabsf(residual_sum - prev_residual_sum) / fmaxf(residual_sum, 1e-10f) < 1e-3f)
+            {
+                printf("Converged at step %d\n", step);
+                break;
+            }
+            prev_residual_sum = residual_sum;
         }
+
+        // Output every step during development
+        printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
+               step, h_residuals[0], h_residuals[1], h_residuals[2],
+               h_residuals[3], h_residuals[4]);
+        printf("Max CFL = %.2f, dt = %.2e\n", current_cfl, dt);
 
         if (step % 100 == 0)
         {
-            printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
-                   step, h_residuals[0], h_residuals[1], h_residuals[2],
-                   h_residuals[3], h_residuals[4]);
-            printf("Max CFL = %.2f, dt = %.2e\n", current_cfl, dt);
-
+            printf("Step #, Residuals (u, v, w, k, epsilon)\n");
             saveFieldData(&flow, step, NX, NY, NZ);
         }
     }

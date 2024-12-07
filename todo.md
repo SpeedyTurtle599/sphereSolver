@@ -1,4 +1,3 @@
-1. Add proper memory cleanup mechanisms
 2. Add monitoring points for residuals
 3. Add error handling
 4. Add physical time control and stopping criteria

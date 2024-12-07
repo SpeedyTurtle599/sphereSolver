@@ -101,5 +101,5 @@ def plot_flow_field(filename):
     plt.show()
 
 # Run visualization
-filename = "velocity_field_000000.dat"
+filename = "velocity_field_000500.dat"
 plot_flow_field(filename)
