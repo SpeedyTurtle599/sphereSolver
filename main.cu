@@ -1,5 +1,7 @@
 // main.cu
 #include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#include <device_atomic_functions.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -55,6 +57,17 @@
 #define CONVECTIVE_VELOCITY INLET_VELOCITY
 #define INLET_TURBULENT_INTENSITY 0.05f
 #define OUTLET_PRESSURE P_REF
+
+// Function prototypes/prologues
+__device__ bool isInsideSphere(int i, int j, int k);
+__device__ bool isNearSphere(int i, int j, int k);
+__device__ float getInletVelocityProfile(int j, int k, int ny, int nz);
+__device__ void getInletConditions(float &k_val, float &eps_val, float u_inlet);
+__device__ float calculateYPlus(float uTau, float yWall, float nu);
+__device__ float calculateUTau(float uTangential, float yWall, float nu);
+__device__ void applyWallFunctions(float &u_new, float &k_new, float &eps_new,
+                                   float uTangential, float yWall, float nu);
+__device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int nx, int ny, int nz);
 
 // MARK: def FlowField
 struct FlowField
@@ -706,43 +719,47 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
 }
 
 // MARK: saveFieldData
-void saveFieldData(FlowField* flow, int step, int nx, int ny, int nz) {
+void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
+{
     char filename[256];
     sprintf(filename, "velocity_field_%06d.dat", step);
-    FILE* fp = fopen(filename, "w");
-    
+    FILE *fp = fopen(filename, "w");
+
     // Allocate host memory for the field data
     int size = nx * ny * nz;
     float *h_u = new float[size];
     float *h_v = new float[size];
     float *h_w = new float[size];
-    
+
     // Copy data from device to host
     cudaMemcpy(h_u, flow->u, size * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_v, flow->v, size * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_w, flow->w, size * sizeof(float), cudaMemcpyDeviceToHost);
-    
+
     // Write header with dimensions
     fprintf(fp, "# nx=%d ny=%d nz=%d\n", nx, ny, nz);
     fprintf(fp, "# x y z u v w velocity_magnitude\n");
-    
+
     // Write field data
-    for(int k = 0; k < nz; k++) {
-        for(int j = 0; j < ny; j++) {
-            for(int i = 0; i < nx; i++) {
-                int idx = i + j*nx + k*nx*ny;
+    for (int k = 0; k < nz; k++)
+    {
+        for (int j = 0; j < ny; j++)
+        {
+            for (int i = 0; i < nx; i++)
+            {
+                int idx = i + j * nx + k * nx * ny;
                 float x = i * DX;
                 float y = j * DX;
                 float z = k * DX;
-                float vel_mag = sqrtf(h_u[idx]*h_u[idx] + 
-                                    h_v[idx]*h_v[idx] + 
-                                    h_w[idx]*h_w[idx]);
+                float vel_mag = sqrtf(h_u[idx] * h_u[idx] +
+                                      h_v[idx] * h_v[idx] +
+                                      h_w[idx] * h_w[idx]);
                 fprintf(fp, "%f %f %f %f %f %f %f\n",
                         x, y, z, h_u[idx], h_v[idx], h_w[idx], vel_mag);
             }
         }
     }
-    
+
     fclose(fp);
     delete[] h_u;
     delete[] h_v;
