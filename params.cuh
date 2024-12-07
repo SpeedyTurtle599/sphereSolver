@@ -29,7 +29,8 @@
 #define NU 1.5e-5f             // Kinematic viscosity
 #define RHO 1.0f               // Density
 #define RESIDUAL_TOL 1e-8f     // Tolerance for residuals
-#define MIN_ITER 1000          // Minimum number of iterations
+#define MAX_ITER 1000         // Maximum number of iterations
+#define MIN_ITER 10          // Minimum number of iterations
 #define MIN_RESIDUAL_CHECK 100 // Check residuals every n iterations
 
 // Grid parameters
