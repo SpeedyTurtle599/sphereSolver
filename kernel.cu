@@ -207,37 +207,38 @@ int main(int argc, char **argv) // for future CLI arguments
                                   dim3(1, block.y, block.z)>>>(
             u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
 
-        // UNCOMMENT TO ENABLE SIMPLEC PRESSURE CORRECTION
-        // // SIMPLEC pressure correction loop
-        // for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
-        // {
-        //     // Calculate divergence
-        //     computeDivergence<<<grid, block>>>(div, u_new, v_new, w_new, NX, NY, NZ);
+        // SIMPLEC pressure correction loop
+        if (SIMPLEC_ENABLED == true){
+            for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
+            {
+                // Calculate divergence
+                computeDivergence<<<grid, block>>>(div, u_new, v_new, w_new, NX, NY, NZ);
 
-        //     // Previous pressure correction
-        //     float *p_corr_old;
-        //     CUDA_CHECK(cudaMalloc(&p_corr_old, size * sizeof(float)));
-        //     cudaMemcpy(p_corr_old, p_corr, size * sizeof(float), cudaMemcpyDeviceToDevice);
+                // Previous pressure correction
+                float *p_corr_old;
+                CUDA_CHECK(cudaMalloc(&p_corr_old, size * sizeof(float)));
+                cudaMemcpy(p_corr_old, p_corr, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
-        //     for (int gs_iter = 0; gs_iter < 5; gs_iter++)
-        //     {
-        //         calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
-        //         cudaDeviceSynchronize();
-        //     }
+                for (int gs_iter = 0; gs_iter < 5; gs_iter++)
+                {
+                    calculatePressureCorrection<<<grid, block>>>(p_corr, div, ap, NX, NY, NZ);
+                    cudaDeviceSynchronize();
+                }
 
-        //     // Under-relax pressure correction using kernel
-        //     underRelaxPressureCorrection<<<grid, block>>>(p_corr, p_corr_old, ALPHA_P, size);
+                // Under-relax pressure correction using kernel
+                underRelaxPressureCorrection<<<grid, block>>>(p_corr, p_corr_old, ALPHA_P, size);
 
-        //     correctVelocities<<<grid, block>>>(u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
+                correctVelocities<<<grid, block>>>(u_new, v_new, w_new, p_corr, ap, NX, NY, NZ);
 
-        //     // Update pressure field
-        //     updatePressure<<<grid, block>>>(flow.p, p_corr, ALPHA_P, size);
+                // Update pressure field
+                updatePressure<<<grid, block>>>(flow.p, p_corr, ALPHA_P, size);
 
-        //     cudaFree(p_corr_old);
+                cudaFree(p_corr_old);
 
-        //     if (iter < MIN_PRESSURE_ITER)
-        //         continue;
-        // }
+                if (iter < MIN_PRESSURE_ITER)
+                    continue;
+            }
+        }
         
 
         // Solve turbulence equations

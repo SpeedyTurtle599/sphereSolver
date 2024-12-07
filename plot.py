@@ -31,7 +31,8 @@ def read_velocity_field(filename):
     return x, y, z, u, v, w, vel_mag, sphere_radius
 
 def plot_flow_field(filename):
-    x, y, z, u, v, w, vel_mag = read_velocity_field(filename)
+    # Update unpacking to include sphere_radius
+    x, y, z, u, v, w, vel_mag, sphere_radius = read_velocity_field(filename)
     
     # Setup figure with GridSpec
     fig = plt.figure(figsize=(15, 10))
@@ -69,9 +70,8 @@ def plot_flow_field(filename):
                          zdir='z', offset=z[mid_z,0,0],
                          levels=20, cmap='viridis', alpha=0.5)
     
-    # Add sphere
+    # Use actual sphere radius from file
     sphere_center = np.mean([x.min(), x.max()])
-    sphere_radius = (x.max() - x.min()) / 10
     
     phi = np.linspace(0, 2 * np.pi, 20)
     theta = np.linspace(0, np.pi, 20)
@@ -101,5 +101,5 @@ def plot_flow_field(filename):
     plt.show()
 
 # Run visualization
-filename = "velocity_field_000500.dat"
+filename = "velocity_field_000000.dat"
 plot_flow_field(filename)

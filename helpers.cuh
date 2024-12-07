@@ -503,245 +503,281 @@ __device__ float calculateStrainRate(float *u, float *v, float *w, int idx, int 
 }
 
 // MARK: solveKEquation
-__global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u, float *v, float *w, float *nut, int nx, int ny, int nz)
+__global__ void solveKEquation(float *k_new, float *k, float *epsilon, float *u, float *v, float *w, 
+                              float *nut, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
+    
+    if (idx >= 0 && idx < size) {
+        int k_idx = idx / (nx * ny);
+        int j = (idx - k_idx * nx * ny) / nx;
+        int i = idx - k_idx * nx * ny - j * nx;
+        
+        // Initialize with old value
+        k_new[idx] = k[idx];
 
-    if (idx > nx && idx < size - nx && !isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
-    {
+        // Skip boundaries and sphere
+        if (i == 0 || i == nx-1 || j == 0 || j == ny-1 || k_idx == 0 || k_idx == nz-1) return;
+        if (isInsideSphere(i, j, k_idx)) {
+            k_new[idx] = 1e-10f;
+            return;
+        }
+
         // Production term
         float S = calculateStrainRate(u, v, w, idx, nx, ny, nz);
         float P_k = nut[idx] * S * S;
 
-        // Diffusion term
-        float k_lap = (k[idx + 1] + k[idx - 1] + k[idx + nx] + k[idx - nx] +
-                       k[idx + nx * ny] + k[idx - nx * ny] - 6.0f * k[idx]) /
-                      (DX * DX);
-        float diff_k = (NU + nut[idx] / SIGMA_k) * k_lap;
+        // Convection terms
+        float u_avg = 0.5f * (u[idx] + u[idx-1]);
+        float v_avg = 0.5f * (v[idx] + v[idx-nx]);
+        float w_avg = 0.5f * (w[idx] + w[idx-nx*ny]);
+        
+        float k_dx = (k[idx+1] - k[idx-1]) / (2.0f * DX);
+        float k_dy = (k[idx+nx] - k[idx-nx]) / (2.0f * DX);
+        float k_dz = (k[idx+nx*ny] - k[idx-nx*ny]) / (2.0f * DX);
+        
+        float convection = -(u_avg * k_dx + v_avg * k_dy + w_avg * k_dz);
 
-        // Update k
-        k_new[idx] = k[idx] + DT * (P_k - epsilon[idx] + diff_k);
-        k_new[idx] = fmaxf(k_new[idx], 1e-10f); // Ensure k stays positive
+        // Diffusion term
+        float k_lap = (k[idx+1] + k[idx-1] + k[idx+nx] + k[idx-nx] +
+                      k[idx+nx*ny] + k[idx-nx*ny] - 6.0f * k[idx]) / (DX * DX);
+        float diff_k = (NU + nut[idx]/SIGMA_k) * k_lap;
+
+        // Update k with all terms
+        float rhs = P_k - epsilon[idx] + diff_k + convection;
+        k_new[idx] = k[idx] + DT * rhs;
+        k_new[idx] = fmaxf(k_new[idx], 1e-10f);
     }
 }
 
 // MARK: solveEpsilonEquation
-__global__ void solveEpsilonEquation(float *eps_new, float *k, float *epsilon, float *u, float *v, float *w, float *nut, int nx, int ny, int nz)
+__global__ void solveEpsilonEquation(float *eps_new, float *k, float *epsilon, float *u, float *v, float *w, 
+                                    float *nut, int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int size = nx * ny * nz;
+    
+    if (idx >= 0 && idx < size) {
+        int k_idx = idx / (nx * ny);
+        int j = (idx - k_idx * nx * ny) / nx;
+        int i = idx - k_idx * nx * ny - j * nx;
+        
+        // Initialize with old value
+        eps_new[idx] = epsilon[idx];
 
-    if (idx > nx && idx < size - nx && !isInsideSphere(idx / (nx * ny), (idx / nx) % ny, idx % nx))
-    {
+        // Skip boundaries and sphere
+        if (i == 0 || i == nx-1 || j == 0 || j == ny-1 || k_idx == 0 || k_idx == nz-1) return;
+        if (isInsideSphere(i, j, k_idx)) {
+            eps_new[idx] = 1e-10f;
+            return;
+        }
+
         // Production term
         float S = calculateStrainRate(u, v, w, idx, nx, ny, nz);
         float P_k = nut[idx] * S * S;
 
-        // Diffusion term
-        float eps_lap = (epsilon[idx + 1] + epsilon[idx - 1] + epsilon[idx + nx] + epsilon[idx - nx] +
-                         epsilon[idx + nx * ny] + epsilon[idx - nx * ny] - 6.0f * epsilon[idx]) /
-                        (DX * DX);
-        float diff_eps = (NU + nut[idx] / SIGMA_epsilon) * eps_lap;
+        // Convection terms
+        float u_avg = 0.5f * (u[idx] + u[idx-1]);
+        float v_avg = 0.5f * (v[idx] + v[idx-nx]);
+        float w_avg = 0.5f * (w[idx] + w[idx-nx*ny]);
+        
+        float eps_dx = (epsilon[idx+1] - epsilon[idx-1]) / (2.0f * DX);
+        float eps_dy = (epsilon[idx+nx] - epsilon[idx-nx]) / (2.0f * DX);
+        float eps_dz = (epsilon[idx+nx*ny] - epsilon[idx-nx*ny]) / (2.0f * DX);
+        
+        float convection = -(u_avg * eps_dx + v_avg * eps_dy + w_avg * eps_dz);
 
-        // Update epsilon
-        eps_new[idx] = epsilon[idx] + DT * ((C_1 * epsilon[idx] * P_k / k[idx]) -
-                                            (C_2 * epsilon[idx] * epsilon[idx] / k[idx]) +
-                                            diff_eps);
-        eps_new[idx] = fmaxf(eps_new[idx], 1e-10f); // Ensure epsilon stays positive
+        // Diffusion term
+        float eps_lap = (epsilon[idx+1] + epsilon[idx-1] + epsilon[idx+nx] + epsilon[idx-nx] +
+                        epsilon[idx+nx*ny] + epsilon[idx-nx*ny] - 6.0f * epsilon[idx]) / (DX * DX);
+        float diff_eps = (NU + nut[idx]/SIGMA_epsilon) * eps_lap;
+
+        // Source terms
+        float k_val = fmaxf(k[idx], 1e-10f);  // Prevent division by zero
+        float eps_val = fmaxf(epsilon[idx], 1e-10f);
+        
+        float source = C_1 * eps_val * P_k / k_val - 
+                      C_2 * eps_val * eps_val / k_val;
+
+        // Update epsilon with all terms
+        float rhs = source + diff_eps + convection;
+        eps_new[idx] = epsilon[idx] + DT * rhs;
+        eps_new[idx] = fmaxf(eps_new[idx], 1e-10f);
     }
 }
 
 // MARK: solveXMomentum
 __global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+                              float *p, float *nut, float *k, float *epsilon,
+                              int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int size = nx * ny * nz;
-
-    if (idx > nx && idx < size - nx && idx % nx != 0 && idx % nx != nx - 1)
-    {
+    if (idx >= 0 && idx < nx*ny*nz) {
         int k_idx = idx / (nx * ny);
         int j = (idx - k_idx * nx * ny) / nx;
         int i = idx - k_idx * nx * ny - j * nx;
 
-        // Check if point is inside or near sphere
-        if (isInsideSphere(i, j, k_idx))
-        {
-            u_new[idx] = 0.0f; // No-slip condition inside sphere
+        // Initialize with old value
+        u_new[idx] = u[idx];
+        
+        // Skip physical boundaries
+        if (i == 0 || i == nx-1) return;
+        
+        // Handle sphere and near-sphere regions
+        if (isInsideSphere(i, j, k_idx)) {
+            u_new[idx] = 0.0f;
             return;
         }
-
-        if (isNearSphere(i, j, k_idx))
-        {
+        
+        if (isNearSphere(i, j, k_idx)) {
             float x = i * DX - SPHERE_CENTER_X * DX;
             float y = j * DX - SPHERE_CENTER_Y * DX;
             float z = k_idx * DX - SPHERE_CENTER_Z * DX;
-            float r = sqrtf(x * x + y * y + z * z);
-
-            if (r > SPHERE_RADIUS)
-            {
+            float r = sqrtf(x*x + y*y + z*z);
+            
+            if (r > SPHERE_RADIUS) {
                 float yWall = r - SPHERE_RADIUS;
-                float uTangential = u[idx]; // Parallel velocity component
-
-                // Apply wall functions
+                float uTangential = u[idx];
                 float k_new_val, eps_new_val;
                 applyWallFunctions(u_new[idx], k_new_val, eps_new_val,
-                                   uTangential, yWall, NU);
-
-                // Update turbulence quantities if this is first cell off wall
-                if (yWall < 1.5f * DX)
-                {
+                                 uTangential, yWall, NU);
+                if (yWall < 1.5f * DX) {
                     k[idx] = k_new_val;
                     epsilon[idx] = eps_new_val;
                 }
-                return;
             }
+            return;
         }
-
-        // Original momentum equation for fluid region
-        float u_dx = (u[idx + 1] - u[idx - 1]) / (2.0f * DX);
-        float u_dy = (u[idx + nx] - u[idx - nx]) / (2.0f * DX);
-        float u_dz = (u[idx + nx * ny] - u[idx - nx * ny]) / (2.0f * DX);
-
+        
+        // Regular fluid region
+        float u_dx = (u[idx+1] - u[idx-1]) / (2.0f * DX);
+        float u_dy = (u[idx+nx] - u[idx-nx]) / (2.0f * DX);
+        float u_dz = (u[idx+nx*ny] - u[idx-nx*ny]) / (2.0f * DX);
+        
         float convection = -(u[idx] * u_dx + v[idx] * u_dy + w[idx] * u_dz);
-        float pressure_grad = -(p[idx + 1] - p[idx - 1]) / (2.0f * DX * RHO);
-        float lap_u = (u[idx + 1] + u[idx - 1] + u[idx + nx] + u[idx - nx] +
-                       u[idx + nx * ny] + u[idx - nx * ny] - 6.0f * u[idx]) /
-                      (DX * DX);
-
+        float pressure_grad = -(p[idx+1] - p[idx-1]) / (2.0f * DX * RHO);
+        float lap_u = (u[idx+1] + u[idx-1] + u[idx+nx] + u[idx-nx] +
+                      u[idx+nx*ny] + u[idx-nx*ny] - 6.0f * u[idx]) / (DX * DX);
+        
         float viscous = (NU + nut[idx]) * lap_u;
-        // u_new[idx] = u[idx] + dt * (viscous + convection + pressure_grad);
-        u_new[idx] = (1.0f - ALPHA_U) * u[idx] + ALPHA_U * (u[idx] + dt * (viscous + convection + pressure_grad));
+        u_new[idx] = u[idx] + ALPHA_U * dt * (viscous + convection + pressure_grad);
     }
 }
 
 // MARK: solveYMomentum
 __global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+                              float *p, float *nut, float *k, float *epsilon,
+                              int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int size = nx * ny * nz;
-
-    if (idx > nx && idx < size - nx && idx % nx != 0 && idx % nx != nx - 1)
-    {
+    if (idx >= 0 && idx < nx*ny*nz) {
         int k_idx = idx / (nx * ny);
         int j = (idx - k_idx * nx * ny) / nx;
         int i = idx - k_idx * nx * ny - j * nx;
 
-        // Check if point is inside or near sphere
-        if (isInsideSphere(i, j, k_idx))
-        {
-            v_new[idx] = 0.0f; // No-slip condition inside sphere
+        // Initialize with old value
+        v_new[idx] = v[idx];
+        
+        // Skip physical boundaries
+        if (j == 0 || j == ny-1) return;
+        
+        // Handle sphere and near-sphere regions
+        if (isInsideSphere(i, j, k_idx)) {
+            v_new[idx] = 0.0f;
             return;
         }
-
-        if (isNearSphere(i, j, k_idx))
-        {
+        
+        if (isNearSphere(i, j, k_idx)) {
             float x = i * DX - SPHERE_CENTER_X * DX;
             float y = j * DX - SPHERE_CENTER_Y * DX;
             float z = k_idx * DX - SPHERE_CENTER_Z * DX;
-            float r = sqrtf(x * x + y * y + z * z);
-
-            if (r > SPHERE_RADIUS)
-            {
+            float r = sqrtf(x*x + y*y + z*z);
+            
+            if (r > SPHERE_RADIUS) {
                 float yWall = r - SPHERE_RADIUS;
-                float vTangential = v[idx]; // Parallel velocity component
-
-                // Apply wall functions
+                float vTangential = v[idx];
                 float k_new_val, eps_new_val;
                 applyWallFunctions(v_new[idx], k_new_val, eps_new_val,
-                                   vTangential, yWall, NU);
-
-                // Update turbulence quantities if this is first cell off wall
-                if (yWall < 1.5f * DX)
-                {
+                                 vTangential, yWall, NU);
+                if (yWall < 1.5f * DX) {
                     k[idx] = k_new_val;
                     epsilon[idx] = eps_new_val;
                 }
-                return;
             }
+            return;
         }
-
-        // Original momentum equation for fluid region
-        float v_dx = (v[idx + 1] - v[idx - 1]) / (2.0f * DX);
-        float v_dy = (v[idx + nx] - v[idx - nx]) / (2.0f * DX);
-        float v_dz = (v[idx + nx * ny] - v[idx - nx * ny]) / (2.0f * DX);
-
+        
+        // Regular fluid region
+        float v_dx = (v[idx+1] - v[idx-1]) / (2.0f * DX);
+        float v_dy = (v[idx+nx] - v[idx-nx]) / (2.0f * DX);
+        float v_dz = (v[idx+nx*ny] - v[idx-nx*ny]) / (2.0f * DX);
+        
         float convection = -(u[idx] * v_dx + v[idx] * v_dy + w[idx] * v_dz);
-        float pressure_grad = -(p[idx + nx] - p[idx - nx]) / (2.0f * DX * RHO);
-        float lap_v = (v[idx + 1] + v[idx - 1] + v[idx + nx] + v[idx - nx] +
-                       v[idx + nx * ny] + v[idx - nx * ny] - 6.0f * v[idx]) /
-                      (DX * DX);
-
+        float pressure_grad = -(p[idx+nx] - p[idx-nx]) / (2.0f * DX * RHO);
+        float lap_v = (v[idx+1] + v[idx-1] + v[idx+nx] + v[idx-nx] +
+                      v[idx+nx*ny] + v[idx-nx*ny] - 6.0f * v[idx]) / (DX * DX);
+        
         float viscous = (NU + nut[idx]) * lap_v;
-        v_new[idx] = (1.0f - ALPHA_U) * v[idx] + ALPHA_U * (v[idx] + dt * (viscous + convection + pressure_grad));
+        v_new[idx] = v[idx] + ALPHA_U * dt * (viscous + convection + pressure_grad);
     }
 }
 
 // MARK: solveZMomentum
 __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
-                               float *p, float *nut, float *k, float *epsilon,
-                               int nx, int ny, int nz, float dt)
+                              float *p, float *nut, float *k, float *epsilon,
+                              int nx, int ny, int nz, float dt)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int size = nx * ny * nz;
-
-    if (idx > nx && idx < size - nx && idx % nx != 0 && idx % nx != nx - 1)
-    {
+    if (idx >= 0 && idx < nx*ny*nz) {
         int k_idx = idx / (nx * ny);
         int j = (idx - k_idx * nx * ny) / nx;
         int i = idx - k_idx * nx * ny - j * nx;
 
-        // Check if point is inside or near sphere
-        if (isInsideSphere(i, j, k_idx))
-        {
-            w_new[idx] = 0.0f; // No-slip condition inside sphere
+        // Initialize with old value
+        w_new[idx] = w[idx];
+        
+        // Skip physical boundaries
+        if (k_idx == 0 || k_idx == nz-1) return;
+        
+        // Handle sphere and near-sphere regions
+        if (isInsideSphere(i, j, k_idx)) {
+            w_new[idx] = 0.0f;
             return;
         }
-
-        if (isNearSphere(i, j, k_idx))
-        {
+        
+        if (isNearSphere(i, j, k_idx)) {
             float x = i * DX - SPHERE_CENTER_X * DX;
             float y = j * DX - SPHERE_CENTER_Y * DX;
             float z = k_idx * DX - SPHERE_CENTER_Z * DX;
-            float r = sqrtf(x * x + y * y + z * z);
-
-            if (r > SPHERE_RADIUS)
-            {
+            float r = sqrtf(x*x + y*y + z*z);
+            
+            if (r > SPHERE_RADIUS) {
                 float yWall = r - SPHERE_RADIUS;
-                float wTangential = w[idx]; // Parallel velocity component
-
-                // Apply wall functions
+                float wTangential = w[idx];
                 float k_new_val, eps_new_val;
                 applyWallFunctions(w_new[idx], k_new_val, eps_new_val,
-                                   wTangential, yWall, NU);
-
-                // Update turbulence quantities if this is first cell off wall
-                if (yWall < 1.5f * DX)
-                {
+                                 wTangential, yWall, NU);
+                if (yWall < 1.5f * DX) {
                     k[idx] = k_new_val;
                     epsilon[idx] = eps_new_val;
                 }
-                return;
             }
+            return;
         }
-
-        // Original momentum equation for fluid region
-        float w_dx = (w[idx + 1] - w[idx - 1]) / (2.0f * DX);
-        float w_dy = (w[idx + nx] - w[idx - nx]) / (2.0f * DX);
-        float w_dz = (w[idx + nx * ny] - w[idx - nx * ny]) / (2.0f * DX);
-
+        
+        // Regular fluid region
+        float w_dx = (w[idx+1] - w[idx-1]) / (2.0f * DX);
+        float w_dy = (w[idx+nx] - w[idx-nx]) / (2.0f * DX);
+        float w_dz = (w[idx+nx*ny] - w[idx-nx*ny]) / (2.0f * DX);
+        
         float convection = -(u[idx] * w_dx + v[idx] * w_dy + w[idx] * w_dz);
-        float pressure_grad = -(p[idx + nx * ny] - p[idx - nx * ny]) / (2.0f * DX * RHO);
-        float lap_w = (w[idx + 1] + w[idx - 1] + w[idx + nx] + w[idx - nx] +
-                       w[idx + nx * ny] + w[idx - nx * ny] - 6.0f * w[idx]) /
-                      (DX * DX);
-
+        float pressure_grad = -(p[idx+nx*ny] - p[idx-nx*ny]) / (2.0f * DX * RHO);
+        float lap_w = (w[idx+1] + w[idx-1] + w[idx+nx] + w[idx-nx] +
+                      w[idx+nx*ny] + w[idx-nx*ny] - 6.0f * w[idx]) / (DX * DX);
+        
         float viscous = (NU + nut[idx]) * lap_w;
-        w_new[idx] = (1.0f - ALPHA_U) * w[idx] + ALPHA_U * (w[idx] + dt * (viscous + convection + pressure_grad));
+        w_new[idx] = w[idx] + ALPHA_U * dt * (viscous + convection + pressure_grad);
     }
 }
 
@@ -764,7 +800,7 @@ void saveFieldData(FlowField *flow, int step, int nx, int ny, int nz)
     cudaMemcpy(h_w, flow->w, size * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Write header with dimensions
-    fprintf(fp, "Data generated by CFD solver\n");
+    fprintf(fp, "# Data generated by CFD solver\n");
     fprintf(fp, "# Time step: %d\n", step);
     fprintf(fp, "# Sphere radius: %f\n", SPHERE_RADIUS);
     fprintf(fp, "# nx=%d ny=%d nz=%d\n", nx, ny, nz);
