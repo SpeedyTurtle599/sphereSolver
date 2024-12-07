@@ -101,7 +101,7 @@ int main(int argc, char **argv) // for future CLI arguments
     float *h_v = new float[size];
     float *h_w = new float[size];
 
-    srand(time(NULL)); // Add randomization
+    srand(static_cast<unsigned int>(time(NULL))); // Add randomization
 
     for (int k = 0; k < NZ; k++)
     {
@@ -120,7 +120,7 @@ int main(int argc, char **argv) // for future CLI arguments
                 else
                 {
                     // Interior with perturbations
-                    float perturbation = 0.1f * (2.0f * rand() / (float)RAND_MAX - 1.0f);
+                    float perturbation = 0.1f * (2.0f * static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 1.0f);
                     h_u[idx] = INLET_VELOCITY * (1.0f + perturbation);
                     h_v[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
                     h_w[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
@@ -178,8 +178,9 @@ int main(int argc, char **argv) // for future CLI arguments
         // Adjust timestep based on CFL
         if (current_cfl > 1e-6f)
         {
-            // Target CFL is 0.5 for stability
-            dt = 0.5 * DX / current_cfl;
+            // Target CFL is 1/2 for stability
+            // dt = 1/2 * dx / cfl
+            dt = DX / (2 * current_cfl);
             dt = fmaxf(dt, MIN_DT);
             dt = fminf(dt, MAX_DT);
         }
