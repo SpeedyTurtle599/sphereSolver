@@ -95,29 +95,53 @@ __global__ void calculateMaxCFL(float *max_cfl, float *u, float *v, float *w, in
 }
 
 // MARK: calculateResiduals
-__global__ void calculateResiduals(float *residuals, float *u, float *u_old, float *v, float *v_old, float *w, float *w_old, float *k_field, float *k_field_old, float *eps, float *eps_old, int size)
+__global__ void calculateResiduals(float *residuals,
+                                   float *u, float *u_old,
+                                   float *v, float *v_old,
+                                   float *w, float *w_old,
+                                   float *k_field, float *k_old,
+                                   float *eps, float *eps_old,
+                                   int nx, int ny, int nz)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int size = nx * ny * nz;
+
     if (idx < size)
     {
-        float du = fabsf(u[idx] - u_old[idx]);
-        float dv = fabsf(v[idx] - v_old[idx]);
-        float dw = fabsf(w[idx] - w_old[idx]);
-        float dk_field = fabsf(k_field[idx] - k_field_old[idx]);
-        float deps = fabsf(eps[idx] - eps_old[idx]);
+        // Skip sphere and boundaries
+        int k = idx / (nx * ny);
+        int j = (idx - k * nx * ny) / nx;
+        int i = idx - k * nx * ny - j * nx;
 
-        // Use custom atomicMaxFloat function
-        atomicMaxFloat(&residuals[0], du);
-        atomicMaxFloat(&residuals[1], dv);
-        atomicMaxFloat(&residuals[2], dw);
-        atomicMaxFloat(&residuals[3], dk_field);
-        atomicMaxFloat(&residuals[4], deps);
+        if (!isInsideSphere(i, j, k) && i > 0 && i < nx - 1 && j > 0 && j < ny - 1 && k > 0 && k < nz - 1)
+        {
+            // Normalize by reference values
+            float u_ref = fmaxf(fabsf(u_old[idx]), INLET_VELOCITY);
+            float v_ref = fmaxf(fabsf(v_old[idx]), INLET_VELOCITY);
+            float w_ref = fmaxf(fabsf(w_old[idx]), INLET_VELOCITY);
+            float k_ref = fmaxf(fabsf(k_old[idx]), 1e-6f);
+            float eps_ref = fmaxf(fabsf(eps_old[idx]), 1e-6f);
+
+            // Calculate normalized residuals
+            float du = fabsf(u[idx] - u_old[idx]) / u_ref;
+            float dv = fabsf(v[idx] - v_old[idx]) / v_ref;
+            float dw = fabsf(w[idx] - w_old[idx]) / w_ref;
+            float dk = fabsf(k_field[idx] - k_old[idx]) / k_ref;
+            float deps = fabsf(eps[idx] - eps_old[idx]) / eps_ref;
+
+            // Update maximum residuals
+            atomicMaxFloat(&residuals[0], du);
+            atomicMaxFloat(&residuals[1], dv);
+            atomicMaxFloat(&residuals[2], dw);
+            atomicMaxFloat(&residuals[3], dk);
+            atomicMaxFloat(&residuals[4], deps);
+        }
     }
 }
 
 // MARK: storeOldValues
 __global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
-                               float *k_field_old, float *eps_old,
+                               float *k_old, float *eps_old,
                                float *u, float *v, float *w,
                                float *k_field, float *eps, int size)
 {
@@ -127,7 +151,7 @@ __global__ void storeOldValues(float *u_old, float *v_old, float *w_old,
         u_old[idx] = u[idx];
         v_old[idx] = v[idx];
         w_old[idx] = w[idx];
-        k_field_old[idx] = k_field[idx];
+        k_old[idx] = k_field[idx];
         eps_old[idx] = eps[idx];
     }
 }
