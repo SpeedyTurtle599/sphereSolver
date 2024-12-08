@@ -270,6 +270,8 @@ int main(int argc, char **argv) // for future CLI arguments
 
         extractMonitoringValues<<<blocks_per_grid, threads_per_block>>>(flow.u, d_u_monitor_curr, d_monitor_indices, num_monitor_points);
 
+        cudaDeviceSynchronize();
+
         // MARK: residuals
         calculateResiduals<<<grid, block>>>(flow.residuals,
                                             flow.u, u_old,
@@ -279,22 +281,7 @@ int main(int argc, char **argv) // for future CLI arguments
                                             flow.epsilon, eps_old,
                                             size);
 
-        // Calculate monitoring residuals
-        computeMonitoringResiduals<<<blocks_per_grid, threads_per_block>>>(d_monitor_residuals, d_u_monitor_curr, d_u_monitor_prev, num_monitor_points);
-
-        float h_monitor_residuals[num_monitor_points];
-        CUDA_CHECK(cudaMemcpy(h_monitor_residuals, d_monitor_residuals, num_monitor_points * sizeof(float), cudaMemcpyDeviceToHost));
-
-        // // Output residuals at monitoring points
-        // printf("Monitoring point residuals at step %d:\n", step);
-        // for (int n = 0; n < num_monitor_points; n++)
-        // {
-        //     printf("Point (%d, %d, %d): Residual = %.6e\n",
-        //         monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
-        //         h_monitor_residuals[n]);
-        // }
-
-        // MARK: convergence
+        // Copy residuals to host and convert to float
         float h_residuals[5];
         cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
         for (int i = 0; i < 5; i++)
@@ -304,6 +291,26 @@ int main(int argc, char **argv) // for future CLI arguments
             h_residuals[i] = converter.f;
         }
 
+        cudaDeviceSynchronize();
+
+        // Calculate monitoring residuals
+        computeMonitoringResiduals<<<blocks_per_grid, threads_per_block>>>(d_monitor_residuals, d_u_monitor_curr, d_u_monitor_prev, num_monitor_points);
+
+        float h_monitor_residuals[num_monitor_points];
+        CUDA_CHECK(cudaMemcpy(h_monitor_residuals, d_monitor_residuals, num_monitor_points * sizeof(float), cudaMemcpyDeviceToHost));
+
+        cudaDeviceSynchronize();
+
+        // Output residuals at monitoring points
+        printf("Monitoring point residuals at step %d:\n", step);
+        for (int n = 0; n < num_monitor_points; n++)
+        {
+            printf("Point (%d, %d, %d): Residual = %.6e\n",
+                monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
+                h_monitor_residuals[n]);
+        }
+
+        // MARK: convergence
         // Normalize and check residuals
         bool converged = (step > MIN_ITER) &&
                          (h_residuals[0] < RESIDUAL_TOL) &&
