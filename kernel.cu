@@ -170,8 +170,9 @@ int main(int argc, char **argv) // for future CLI arguments
         // Copy monitoring points
         CUDA_CHECK(cudaMemcpy(d_u_monitor_prev, d_u_monitor_curr, num_monitor_points * sizeof(float), cudaMemcpyDeviceToDevice));
 
-        // Zero out residuals for this step
+        // Zero out residuals and CFL for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
+        cudaMemset(d_max_cfl, 0, sizeof(float));
 
         // MARK: cfl step
         // Calculate maximum CFL
@@ -194,7 +195,6 @@ int main(int argc, char **argv) // for future CLI arguments
             dt = fmaxf(dt, MIN_DT);
             dt = fminf(dt, MAX_DT);
         }
-
 
         // MARK: momentum
         solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
@@ -254,13 +254,14 @@ int main(int argc, char **argv) // for future CLI arguments
         solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k_field, flow.epsilon,
                                               flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
 
-        // Update fields
+        // Update field variables
         cudaMemcpy(flow.u, u_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.v, v_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.w, w_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.k_field, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.epsilon, eps_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
+        // Calculate turbulent viscosity on new values
         calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k_field, flow.epsilon, size);
 
         // Extract current values at monitoring points
