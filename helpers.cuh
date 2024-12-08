@@ -372,6 +372,22 @@ __global__ void applyBoundaryConditions(float *u, float *v, float *w, float *p,
 
     if (j < ny && k_idx < nz)
     {
+        // Walls (j = 0 || j = ny-1, k_idx = 0 || k_idx = nz-1)
+        if (j == 0 || j == ny-1) {
+            // Apply wall or symmetry conditions for y-direction
+            int idx = j * nx + k_idx * nx * ny;
+            v[idx] = 0.0f;  // No-slip for walls
+            u[idx] = u[idx + (j == 0 ? nx : -nx)];  // Copy tangential velocities
+            w[idx] = w[idx + (j == 0 ? nx : -nx)];
+        }
+        if (k_idx == 0 || k_idx == nz-1) {
+            // Apply wall or symmetry conditions for z-direction
+            int idx = j * nx + k_idx * nx * ny;
+            w[idx] = 0.0f;  // No-slip for walls
+            u[idx] = u[idx + (k_idx == 0 ? nx*ny : -nx*ny)];
+            v[idx] = v[idx + (k_idx == 0 ? nx*ny : -nx*ny)];
+        }
+
         // Inlet boundary (x = 0)
         int inlet_idx = j * nx + k_idx * nx * ny;
         if (!isInsideSphere(0, j, k_idx)) // Check if not inside sphere
@@ -621,7 +637,8 @@ __global__ void solveXMomentum(float *u_new, float *u, float *v, float *w,
         // Initialize with old value
         u_new[idx] = u[idx];
         
-        // Skip physical boundaries
+        // Skip inlet/outlet boundaries
+        // Handled by applyBoundaryConditions
         if (i == 0 || i == nx-1) return;
         
         // Handle sphere and near-sphere regions
@@ -680,6 +697,7 @@ __global__ void solveYMomentum(float *v_new, float *u, float *v, float *w,
         v_new[idx] = v[idx];
         
         // Skip physical boundaries
+        // Handled by applyBoundaryConditions
         if (j == 0 || j == ny-1) return;
         
         // Handle sphere and near-sphere regions
@@ -738,6 +756,7 @@ __global__ void solveZMomentum(float *w_new, float *u, float *v, float *w,
         w_new[idx] = w[idx];
         
         // Skip physical boundaries
+        // Handled by applyBoundaryConditions
         if (k_idx == 0 || k_idx == nz-1) return;
         
         // Handle sphere and near-sphere regions

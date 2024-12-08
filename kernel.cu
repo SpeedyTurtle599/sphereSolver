@@ -110,16 +110,24 @@ int main(int argc, char **argv) // for future CLI arguments
             for (int i = 0; i < NX; i++)
             {
                 int idx = i + j * NX + k * NX * NY;
-
+                
+                // Inlet
                 if (i == 0)
                 {
                     h_u[idx] = INLET_VELOCITY;
                     h_v[idx] = 0.0f;
                     h_w[idx] = 0.0f;
                 }
+                // Outlet
+                else if (i == NX-1)
+                {
+                    h_u[idx] = h_u[idx-1];
+                    h_v[idx] = h_v[idx-1];
+                    h_w[idx] = h_w[idx-1];
+                }
+                // Interior with perturbations
                 else
                 {
-                    // Interior with perturbations
                     float perturbation = 0.1f * (2.0f * static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 1.0f);
                     h_u[idx] = INLET_VELOCITY * (1.0f + perturbation);
                     h_v[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
@@ -150,8 +158,8 @@ int main(int argc, char **argv) // for future CLI arguments
     // Synchronize all CUDA threads to ensure initialization is complete
     cudaDeviceSynchronize();
 
-    // MARK: time stepping
-    for (int step = 0; step < MAX_ITER; step++)
+    // MARK: timestepping
+    for (int step = 0; step < (MAX_ITER+1); step++)
     {
         // Copy old values
         storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k, flow.epsilon, size);
@@ -165,6 +173,7 @@ int main(int argc, char **argv) // for future CLI arguments
         // Zero out residuals for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
 
+        // MARK: cfl step
         // Calculate maximum CFL
         cudaMemset(d_max_cfl, 0, sizeof(float));
         calculateMaxCFL<<<grid, block>>>(d_max_cfl, flow.u, flow.v, flow.w, size);
@@ -181,11 +190,13 @@ int main(int argc, char **argv) // for future CLI arguments
             // Target CFL is 1/2 for stability
             // dt = 1/2 * dx / cfl
             dt = DX / (2 * current_cfl);
+            // Clamp dt to min and max values
             dt = fmaxf(dt, MIN_DT);
             dt = fminf(dt, MAX_DT);
         }
 
-        // Momentum predictor
+
+        // MARK: momentum
         solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
@@ -204,7 +215,7 @@ int main(int argc, char **argv) // for future CLI arguments
         // Apply boundary conditions
         applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
 
-        // SIMPLEC pressure correction loop
+        // MARK: SIMPLEC
         if (SIMPLEC_ENABLED == true){
             for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
             {
@@ -237,8 +248,7 @@ int main(int argc, char **argv) // for future CLI arguments
             }
         }
         
-
-        // Solve turbulence equations
+        // MARK: k-epsilon
         solveKEquation<<<grid, block>>>(k_new, flow.k, flow.epsilon, flow.u,
                                         flow.v, flow.w, flow.nut, NX, NY, NZ);
         solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k, flow.epsilon,
@@ -259,7 +269,7 @@ int main(int argc, char **argv) // for future CLI arguments
 
         extractMonitoringValues<<<blocks_per_grid, threads_per_block>>>(flow.u, d_u_monitor_curr, d_monitor_indices, num_monitor_points);
 
-        // Calculate residuals
+        // MARK: residuals
         calculateResiduals<<<grid, block>>>(flow.residuals,
                                             flow.u, u_old,
                                             flow.v, v_old,
@@ -283,7 +293,7 @@ int main(int argc, char **argv) // for future CLI arguments
         //         h_monitor_residuals[n]);
         // }
 
-        // Check convergence
+        // MARK: convergence
         float h_residuals[5];
         cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
         for (int i = 0; i < 5; i++)
@@ -318,6 +328,7 @@ int main(int argc, char **argv) // for future CLI arguments
             prev_residual_sum = residual_sum;
         }
 
+        // MARK: reporting
         if (step % 100 == 0)
         {
             printf("Step #: Residuals = u v w k epsilon\n");
