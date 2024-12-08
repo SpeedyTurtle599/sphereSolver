@@ -146,12 +146,12 @@ int main(int argc, char **argv) // for future CLI arguments
     delete[] h_v;
     delete[] h_w;
 
-    // Initialize k and epsilon
-    initializeFields<<<grid, block>>>(flow.k, flow.epsilon, flow.u, flow.v, flow.w,
+    // Initialize k_field and epsilon
+    initializeFields<<<grid, block>>>(flow.k_field, flow.epsilon, flow.u, flow.v, flow.w,
                                       NX, NY, NZ);
 
     // Initialize turbulent viscosity
-    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k_field, flow.epsilon, size);
 
     printf("Initialization complete. Starting time stepping...\n");
 
@@ -162,7 +162,7 @@ int main(int argc, char **argv) // for future CLI arguments
     for (int step = 0; step < (MAX_ITER+1); step++)
     {
         // Copy old values
-        storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k, flow.epsilon, size);
+        storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k_field, flow.epsilon, size);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
@@ -197,23 +197,23 @@ int main(int argc, char **argv) // for future CLI arguments
 
 
         // MARK: momentum
-        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
-        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
-        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
         // Apply boundary conditions
-        applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
+        applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k_field, flow.epsilon, NX, NY, NZ);
 
         // MARK: SIMPLEC
         if (SIMPLEC_ENABLED == true){
@@ -249,19 +249,19 @@ int main(int argc, char **argv) // for future CLI arguments
         }
         
         // MARK: k-epsilon
-        solveKEquation<<<grid, block>>>(k_new, flow.k, flow.epsilon, flow.u,
+        solveKEquation<<<grid, block>>>(k_new, flow.k_field, flow.epsilon, flow.u,
                                         flow.v, flow.w, flow.nut, NX, NY, NZ);
-        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k, flow.epsilon,
+        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k_field, flow.epsilon,
                                               flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
 
         // Update fields
         cudaMemcpy(flow.u, u_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.v, v_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.w, w_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(flow.k, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.k_field, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.epsilon, eps_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
-        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k_field, flow.epsilon, size);
 
         // Extract current values at monitoring points
         int threads_per_block = 128;
@@ -274,7 +274,7 @@ int main(int argc, char **argv) // for future CLI arguments
                                             flow.u, u_old,
                                             flow.v, v_old,
                                             flow.w, w_old,
-                                            flow.k, k_old,
+                                            flow.k_field, k_old,
                                             flow.epsilon, eps_old,
                                             size);
 
@@ -331,7 +331,7 @@ int main(int argc, char **argv) // for future CLI arguments
         // MARK: reporting
         if (step % 100 == 0)
         {
-            printf("Step #: Residuals = u v w k epsilon\n");
+            printf("Step #: Residuals = u v w k_field epsilon\n");
             printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
                step, h_residuals[0], h_residuals[1], h_residuals[2],
                h_residuals[3], h_residuals[4]);
