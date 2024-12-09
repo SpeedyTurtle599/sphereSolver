@@ -113,6 +113,14 @@ __global__ void calculateResiduals(float *residuals,
         int j = (idx - k * nx * ny) / nx;
         int i = idx - k * nx * ny - j * nx;
 
+        // Debug prints for first 5 iterations
+        // #ifdef _DEBUG
+        //     if (idx < 5)
+        //     {
+        //         printf("Debug idx=%d: u=%f u_old=%f\n", idx, u[idx], u_old[idx]);
+        //     }
+        // #endif
+
         if (!isInsideSphere(i, j, k) && i > 0 && i < nx - 1 && j > 0 && j < ny - 1 && k > 0 && k < nz - 1)
         {
             // Normalize by reference values
@@ -128,6 +136,13 @@ __global__ void calculateResiduals(float *residuals,
             float dw = fabsf(w[idx] - w_old[idx]) / w_ref;
             float dk = fabsf(k_field[idx] - k_old[idx]) / k_ref;
             float deps = fabsf(eps[idx] - eps_old[idx]) / eps_ref;
+
+            // #ifdef _DEBUG
+            //     if (idx < 5)
+            //     {
+            //         printf("Debug residual calc idx=%d: du=%e\n", idx, du);
+            //     }
+            // #endif
 
             // Update maximum residuals
             atomicMaxFloat(&residuals[0], du);

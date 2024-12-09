@@ -162,7 +162,6 @@ int main(int argc, char **argv) // for future CLI arguments
     {
         // Copy old values
         storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k_field, flow.epsilon, size);
-
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
@@ -171,7 +170,6 @@ int main(int argc, char **argv) // for future CLI arguments
 
         // Zero out residuals and CFL for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
-        cudaMemset(d_max_cfl, 0, sizeof(float));
 
         // MARK: cfl step
         // Calculate maximum CFL
@@ -282,12 +280,6 @@ int main(int argc, char **argv) // for future CLI arguments
         // Copy residuals to host and convert to float
         float h_residuals[5];
         cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
-        for (int i = 0; i < 5; i++)
-        {
-            FloatInt converter;
-            converter.i = *(unsigned int *)&h_residuals[i];
-            h_residuals[i] = converter.f;
-        }
 
         cudaDeviceSynchronize();
 
@@ -335,15 +327,21 @@ int main(int argc, char **argv) // for future CLI arguments
         }
 
         // MARK: reporting
-        if (step % 100 == 0)
-        {
-            printf("Step #: Residuals = u v w k_field epsilon\n");
+        #ifdef _DEBUG
             printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
-                   step, h_residuals[0], h_residuals[1], h_residuals[2],
-                   h_residuals[3], h_residuals[4]);
-            printf("Max CFL = %.2f, dt = %.2e\n\n", current_cfl, dt);
-            saveFieldData(&flow, step, NX, NY, NZ);
-        }
+                step, h_residuals[0], h_residuals[1], h_residuals[2],
+                h_residuals[3], h_residuals[4]);
+        #else
+            if (step % 100 == 0)
+            {
+                printf("Step #: Residuals = u v w k_field epsilon\n");
+                printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
+                    step, h_residuals[0], h_residuals[1], h_residuals[2],
+                    h_residuals[3], h_residuals[4]);
+                printf("Max CFL = %.2f, dt = %.2e\n\n", current_cfl, dt);
+                saveFieldData(&flow, step, NX, NY, NZ);
+            }
+        #endif
     }
     printf("Simulation complete\n");
 
