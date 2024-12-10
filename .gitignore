@@ -5,4 +5,4 @@ x64/*
 *.dat
 *playground*
 .ds_store
-*.vcxproj
+*.vcxproj*
