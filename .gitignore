@@ -2,5 +2,6 @@
 .vscode/
 sphereSolver/*
 x64/*
-headerExperiments/*
 *.dat
+*playground*
+.ds_store

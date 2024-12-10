@@ -26,15 +26,14 @@ int main(int argc, char **argv) // for future CLI arguments
 
     // MARK: monitoring points
     // Define monitoring points (i, j, k)
-    const int num_monitor_points = 3; // Number of monitoring points
+    const int num_monitor_points = 3;          // Number of monitoring points
     int h_monitor_indices[num_monitor_points]; // Array to hold linear indices
 
     // Monitoring points: 1/4, 1/2, 3/4 along x-axis
     int monitor_coords[num_monitor_points][3] = {
         {NX / 4, NY / 2, NZ / 2},
         {NX / 2, NY / 2, NZ / 2},
-        {3 * NX / 4, NY / 2, NZ / 2}
-    };
+        {3 * NX / 4, NY / 2, NZ / 2}};
 
     // Compute linear indices
     for (int n = 0; n < num_monitor_points; n++)
@@ -111,15 +110,23 @@ int main(int argc, char **argv) // for future CLI arguments
             {
                 int idx = i + j * NX + k * NX * NY;
 
+                // Inlet
                 if (i == 0)
                 {
                     h_u[idx] = INLET_VELOCITY;
                     h_v[idx] = 0.0f;
                     h_w[idx] = 0.0f;
                 }
+                // Outlet
+                else if (i == NX - 1)
+                {
+                    h_u[idx] = h_u[idx - 1];
+                    h_v[idx] = h_v[idx - 1];
+                    h_w[idx] = h_w[idx - 1];
+                }
+                // Interior with perturbations
                 else
                 {
-                    // Interior with perturbations
                     float perturbation = 0.1f * (2.0f * static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 1.0f);
                     h_u[idx] = INLET_VELOCITY * (1.0f + perturbation);
                     h_v[idx] = 0.05f * INLET_VELOCITY * (2.0f * rand() / (float)RAND_MAX - 1.0f);
@@ -138,33 +145,33 @@ int main(int argc, char **argv) // for future CLI arguments
     delete[] h_v;
     delete[] h_w;
 
-    // Initialize k and epsilon
-    initializeFields<<<grid, block>>>(flow.k, flow.epsilon, flow.u, flow.v, flow.w,
+    // Initialize k_field and epsilon
+    initializeFields<<<grid, block>>>(flow.k_field, flow.epsilon, flow.u, flow.v, flow.w,
                                       NX, NY, NZ);
 
     // Initialize turbulent viscosity
-    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+    calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k_field, flow.epsilon, size);
 
     printf("Initialization complete. Starting time stepping...\n");
 
     // Synchronize all CUDA threads to ensure initialization is complete
     cudaDeviceSynchronize();
 
-    // MARK: time stepping
-    for (int step = 0; step < MAX_ITER; step++)
+    // MARK: timestepping
+    for (int step = 0; step < (MAX_ITER + 1); step++)
     {
         // Copy old values
-        storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k, flow.epsilon, size);
-
+        storeOldValues<<<grid, block>>>(u_old, v_old, w_old, k_old, eps_old, flow.u, flow.v, flow.w, flow.k_field, flow.epsilon, size);
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
         // Copy monitoring points
         CUDA_CHECK(cudaMemcpy(d_u_monitor_prev, d_u_monitor_curr, num_monitor_points * sizeof(float), cudaMemcpyDeviceToDevice));
 
-        // Zero out residuals for this step
+        // Zero out residuals and CFL for this step
         cudaMemset(flow.residuals, 0, 5 * sizeof(float));
 
+        // MARK: cfl step
         // Calculate maximum CFL
         cudaMemset(d_max_cfl, 0, sizeof(float));
         calculateMaxCFL<<<grid, block>>>(d_max_cfl, flow.u, flow.v, flow.w, size);
@@ -181,31 +188,33 @@ int main(int argc, char **argv) // for future CLI arguments
             // Target CFL is 1/2 for stability
             // dt = 1/2 * dx / cfl
             dt = DX / (2 * current_cfl);
+            // Clamp dt to min and max values
             dt = fmaxf(dt, MIN_DT);
             dt = fminf(dt, MAX_DT);
         }
 
-        // Momentum predictor
-        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        // MARK: momentum
+        solveXMomentum<<<grid, block>>>(u_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
-        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        solveYMomentum<<<grid, block>>>(v_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
-        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k, flow.epsilon, NX, NY, NZ, dt);
+        solveZMomentum<<<grid, block>>>(w_new, flow.u, flow.v, flow.w, flow.p, flow.nut, flow.k_field, flow.epsilon, NX, NY, NZ, dt);
 
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaGetLastError());
 
         // Apply boundary conditions
-        applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k, flow.epsilon, NX, NY, NZ);
+        applyBoundaryConditions<<<grid, block>>>(u_new, v_new, w_new, flow.p, flow.k_field, flow.epsilon, NX, NY, NZ);
 
-        // SIMPLEC pressure correction loop
-        if (SIMPLEC_ENABLED == true){
+        // MARK: SIMPLEC
+        if (SIMPLEC_ENABLED == true)
+        {
             for (int iter = 0; iter < MAX_PRESSURE_ITER; iter++)
             {
                 // Calculate divergence
@@ -236,22 +245,20 @@ int main(int argc, char **argv) // for future CLI arguments
                     continue;
             }
         }
-        
 
-        // Solve turbulence equations
-        solveKEquation<<<grid, block>>>(k_new, flow.k, flow.epsilon, flow.u,
-                                        flow.v, flow.w, flow.nut, NX, NY, NZ);
-        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k, flow.epsilon,
-                                              flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
+        // MARK: k-epsilon
+        solveKEquation<<<grid, block>>>(k_new, flow.k_field, flow.epsilon, flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
+        solveEpsilonEquation<<<grid, block>>>(eps_new, flow.k_field, flow.epsilon, flow.u, flow.v, flow.w, flow.nut, NX, NY, NZ);
 
-        // Update fields
+        // Update field variables
         cudaMemcpy(flow.u, u_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.v, v_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.w, w_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(flow.k, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(flow.k_field, k_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
         cudaMemcpy(flow.epsilon, eps_new, size * sizeof(float), cudaMemcpyDeviceToDevice);
 
-        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k, flow.epsilon, size);
+        // Calculate turbulent viscosity on new values
+        calculateTurbulentViscosity<<<grid, block>>>(flow.nut, flow.k_field, flow.epsilon, size);
 
         // Extract current values at monitoring points
         int threads_per_block = 128;
@@ -259,14 +266,22 @@ int main(int argc, char **argv) // for future CLI arguments
 
         extractMonitoringValues<<<blocks_per_grid, threads_per_block>>>(flow.u, d_u_monitor_curr, d_monitor_indices, num_monitor_points);
 
-        // Calculate residuals
+        cudaDeviceSynchronize();
+
+        // MARK: residuals
         calculateResiduals<<<grid, block>>>(flow.residuals,
                                             flow.u, u_old,
                                             flow.v, v_old,
                                             flow.w, w_old,
-                                            flow.k, k_old,
+                                            flow.k_field, k_old,
                                             flow.epsilon, eps_old,
-                                            size);
+                                            NX, NY, NZ);
+
+        // Copy residuals to host and convert to float
+        float h_residuals[5];
+        cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
+
+        cudaDeviceSynchronize();
 
         // Calculate monitoring residuals
         computeMonitoringResiduals<<<blocks_per_grid, threads_per_block>>>(d_monitor_residuals, d_u_monitor_curr, d_u_monitor_prev, num_monitor_points);
@@ -274,25 +289,18 @@ int main(int argc, char **argv) // for future CLI arguments
         float h_monitor_residuals[num_monitor_points];
         CUDA_CHECK(cudaMemcpy(h_monitor_residuals, d_monitor_residuals, num_monitor_points * sizeof(float), cudaMemcpyDeviceToHost));
 
-        // // Output residuals at monitoring points
-        // printf("Monitoring point residuals at step %d:\n", step);
-        // for (int n = 0; n < num_monitor_points; n++)
-        // {
-        //     printf("Point (%d, %d, %d): Residual = %.6e\n",
-        //         monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
-        //         h_monitor_residuals[n]);
-        // }
+        cudaDeviceSynchronize();
 
-        // Check convergence
-        float h_residuals[5];
-        cudaMemcpy(h_residuals, flow.residuals, 5 * sizeof(float), cudaMemcpyDeviceToHost);
-        for (int i = 0; i < 5; i++)
+        // Output residuals at monitoring points
+        printf("Monitoring point residuals at step %d:\n", step);
+        for (int n = 0; n < num_monitor_points; n++)
         {
-            FloatInt converter;
-            converter.i = *(unsigned int *)&h_residuals[i];
-            h_residuals[i] = converter.f;
+            printf("Point (%d, %d, %d): Residual = %.6e\n",
+                   monitor_coords[n][0], monitor_coords[n][1], monitor_coords[n][2],
+                   h_monitor_residuals[n]);
         }
 
+        // MARK: convergence
         // Normalize and check residuals
         bool converged = (step > MIN_ITER) &&
                          (h_residuals[0] < RESIDUAL_TOL) &&
@@ -318,15 +326,22 @@ int main(int argc, char **argv) // for future CLI arguments
             prev_residual_sum = residual_sum;
         }
 
-        if (step % 100 == 0)
-        {
-            printf("Step #: Residuals = u v w k epsilon\n");
+        // MARK: reporting
+        #ifdef _DEBUG
             printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
-               step, h_residuals[0], h_residuals[1], h_residuals[2],
-               h_residuals[3], h_residuals[4]);
-            printf("Max CFL = %.2f, dt = %.2e\n\n", current_cfl, dt);
-            saveFieldData(&flow, step, NX, NY, NZ);
-        }
+                step, h_residuals[0], h_residuals[1], h_residuals[2],
+                h_residuals[3], h_residuals[4]);
+        #else
+            if (step % 100 == 0)
+            {
+                printf("Step #: Residuals = u v w k_field epsilon\n");
+                printf("Step %d: Residuals = %.2e %.2e %.2e %.2e %.2e\n",
+                    step, h_residuals[0], h_residuals[1], h_residuals[2],
+                    h_residuals[3], h_residuals[4]);
+                printf("Max CFL = %.2f, dt = %.2e\n\n", current_cfl, dt);
+                saveFieldData(&flow, step, NX, NY, NZ);
+            }
+        #endif
     }
     printf("Simulation complete\n");
 
