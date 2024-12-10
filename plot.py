@@ -45,7 +45,7 @@ def plot_flow_field(filename):
     mid_z = x.shape[0] // 2
     
     # Downsample for quiver
-    skip = 4
+    skip = 4 # Skip every 4th point
     x_sub = x[::skip, ::skip, ::skip]
     y_sub = y[::skip, ::skip, ::skip]
     z_sub = z[::skip, ::skip, ::skip]
@@ -54,7 +54,7 @@ def plot_flow_field(filename):
     w_sub = w[::skip, ::skip, ::skip]
     vel_mag_sub = vel_mag[::skip, ::skip, ::skip]
     
-    # Setup colormap
+    # Set up colormap
     norm = plt.Normalize(vel_mag_sub.min(), vel_mag_sub.max())
     colors = cm.viridis(norm(vel_mag_sub))
     
@@ -70,7 +70,7 @@ def plot_flow_field(filename):
                          zdir='z', offset=z[mid_z,0,0],
                          levels=20, cmap='viridis', alpha=0.5)
     
-    # Use actual sphere radius from file
+    # Use actual sphere radius from file header
     sphere_center = np.mean([x.min(), x.max()])
     
     phi = np.linspace(0, 2 * np.pi, 20)
@@ -94,7 +94,7 @@ def plot_flow_field(filename):
     sm.set_array([])
     plt.colorbar(sm, cax=cax, label='Velocity Magnitude')
     
-    # Equal aspect ratio
+    # Cubic aspect ratio
     ax.set_box_aspect([1, 1, 1])
     
     plt.tight_layout()
